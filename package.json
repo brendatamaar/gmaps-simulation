@@ -4,7 +4,11 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "node --import ./node_modules/tsx/dist/esm/index.cjs src/index.ts"
+    "dev": "node --import ./node_modules/tsx/dist/esm/index.cjs src/index.ts",
+    "route": "node --import ./node_modules/tsx/dist/esm/index.cjs src/route.ts",
+    "build:wasm": "asc assembly/index.ts --target release --outFile build/release.wasm --optimize --runtime stub",
+    "test:wasm": "node --import ./node_modules/tsx/dist/esm/index.cjs src/test-wasm.ts",
+    "validate:as": "node --import ./node_modules/tsx/dist/esm/index.cjs src/validate-as.ts"
   },
   "keywords": [],
   "author": "",
@@ -19,7 +23,11 @@
   "type": "module",
   "devDependencies": {
     "@types/node": "^25.9.2",
+    "assemblyscript": "^0.28.19",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "osm-pbf-parser": "^2.3.0"
   }
 }
