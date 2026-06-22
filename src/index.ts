@@ -1,2 +1,2 @@
-const msg: string = "Phase 1 setup OK";
+const msg: string = "Setup OK";
 console.log(msg);

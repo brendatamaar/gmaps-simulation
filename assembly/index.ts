@@ -8,9 +8,9 @@ let latsPtr:    usize = 0; // f64[N]
 let lonsPtr:    usize = 0; // f64[N]
 
 // A* scratch (allocated once in initGraph)
-let gPtr:     usize = 0; // f64[N] — g-scores
-let parentPtr: usize = 0; // i32[N] — parent pointers
-let closedPtr: usize = 0; // u8[N]  — closed set
+let gPtr:     usize = 0; // f64[N] g-scores
+let parentPtr: usize = 0; // i32[N] parent pointers
+let closedPtr: usize = 0; // u8[N]  closed set
 
 // Result
 let pathPtr:    usize = 0; // i32[N]
@@ -18,7 +18,7 @@ let pathLen:    i32   = 0;
 let distResult: f64   = 0.0;
 let visitedRes: i32   = 0;
 
-// Binary min-heap (lazy, no decrease-key) — parallel arrays
+// Binary min-heap (lazy, no decrease-key), parallel arrays
 // Worst-case pushes = E (one per edge relaxation)
 let hNodePtr:  usize = 0; // i32[E]
 let hScorePtr: usize = 0; // f64[E]
@@ -54,7 +54,7 @@ export function initGraph(nodeCount: i32, edgeCount: i32): void {
   hScorePtr  = heap.alloc(<usize>(E << 3));
 }
 
-// Pointer accessors — JS writes graph data into these regions after initGraph()
+// Pointer accessors. JS writes graph data into these regions after initGraph()
 export function getOffsetsPtr(): usize { return offsetsPtr; }
 export function getTargetsPtr(): usize { return targetsPtr; }
 export function getDistPtr():    usize { return distPtr; }

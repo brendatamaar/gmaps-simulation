@@ -52,6 +52,8 @@ console.log(`  Nodes visited: ${tsResult.nodesVisited.toLocaleString()}`);
 // --- AssemblyScript A* ---
 console.log('\n[AS A*]');
 const wasmBuf = await readFile(path.join(__dirname, '../build/release.wasm'));
+// AssemblyScript's NativeMath compiles to imports from the `Math` namespace;
+// the DOM `Imports` type doesn't model it, hence the cast.
 const importObject = {
   env: {
     abort(_msg: number, _file: number, line: number, col: number): never {
@@ -59,13 +61,13 @@ const importObject = {
     },
   },
   Math,
-};
+} as unknown as WebAssembly.Imports;
 const { instance } = await WebAssembly.instantiate(wasmBuf, importObject);
 const wasm = instance.exports as unknown as WasmExports;
 
 wasm.initGraph(csr.n, csr.targets.length);
 
-// All heap.alloc calls happen inside initGraph — get buffer after that so it's stable.
+// All heap.alloc calls happen inside initGraph; get buffer after that so it's stable.
 const buf = wasm.memory.buffer;
 new Int32Array(buf, wasm.getOffsetsPtr(), csr.n + 1).set(csr.offsets);
 new Int32Array(buf, wasm.getTargetsPtr(), csr.targets.length).set(csr.targets);

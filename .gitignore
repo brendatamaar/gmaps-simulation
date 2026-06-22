@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.pbf
 docs/
+dist-web/
+web/public/

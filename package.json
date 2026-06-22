@@ -7,8 +7,13 @@
     "dev": "node --import ./node_modules/tsx/dist/esm/index.cjs src/index.ts",
     "route": "node --import ./node_modules/tsx/dist/esm/index.cjs src/route.ts",
     "build:wasm": "asc assembly/index.ts --target release --outFile build/release.wasm --optimize --runtime stub",
-    "test:wasm": "node --import ./node_modules/tsx/dist/esm/index.cjs src/test-wasm.ts",
-    "validate:as": "node --import ./node_modules/tsx/dist/esm/index.cjs src/validate-as.ts"
+    "validate:as": "node --import ./node_modules/tsx/dist/esm/index.cjs src/validate-as.ts",
+    "export:graph": "node --import ./node_modules/tsx/dist/esm/index.cjs src/export-graph.ts",
+    "test:ch": "node --import ./node_modules/tsx/dist/esm/index.cjs src/test-ch.ts",
+    "ch:city": "node --import ./node_modules/tsx/dist/esm/index.cjs src/bench-ch.ts",
+    "dev:web": "vite",
+    "build:web": "vite build",
+    "preview:web": "vite preview"
   },
   "keywords": [],
   "author": "",
@@ -25,9 +30,11 @@
     "@types/node": "^25.9.2",
     "assemblyscript": "^0.28.19",
     "tsx": "^4.22.4",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vite": "^7.3.5"
   },
   "dependencies": {
+    "maplibre-gl": "^5.24.0",
     "osm-pbf-parser": "^2.3.0"
   }
 }
