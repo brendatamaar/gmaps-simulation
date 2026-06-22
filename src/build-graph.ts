@@ -2,28 +2,33 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { parsePbf } from './lib/parser.ts';
 import { haversine } from './lib/geo.ts';
+import { roadClass } from './lib/roadclass.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PBF_PATH = path.join(__dirname, '../data/java-260607.osm.pbf');
 const JAKARTA_BBOX = { minLat: -6.40, maxLat: -6.05, minLng: 106.65, maxLng: 107.00 };
 
-export type Edge = { to: number; dist: number };
+export type Edge = { to: number; dist: number; cls: number; name: string };
 export type AdjList = Map<number, Edge[]>;
 
-export type GraphResult = { adj: AdjList; nodes: Map<number, import('./lib/parser.ts').NodeCoord> };
+export type GraphResult = {
+  adj: AdjList;
+  nodes: Map<number, import('./lib/parser.ts').NodeCoord>;
+  places: import('./lib/parser.ts').OsmPlace[];
+};
 
 export async function buildGraph(): Promise<GraphResult> {
   console.log('Parsing PBF...');
-  const { nodes, ways } = await parsePbf(PBF_PATH, JAKARTA_BBOX);
-  console.log(`  ${nodes.size.toLocaleString()} nodes, ${ways.length.toLocaleString()} ways`);
+  const { nodes, ways, places } = await parsePbf(PBF_PATH, JAKARTA_BBOX);
+  console.log(`  ${nodes.size.toLocaleString()} nodes, ${ways.length.toLocaleString()} ways, ${places.length.toLocaleString()} places`);
 
   console.log('Building adjacency list...');
   const adj: AdjList = new Map();
 
-  function addEdge(from: number, to: number, dist: number) {
+  function addEdge(from: number, to: number, dist: number, cls: number, name: string) {
     let list = adj.get(from);
     if (!list) { list = []; adj.set(from, list); }
-    list.push({ to, dist });
+    list.push({ to, dist, cls, name });
   }
 
   let edgeCount = 0;
@@ -33,6 +38,8 @@ export async function buildGraph(): Promise<GraphResult> {
     const oneway = way.tags['oneway'];
     const forward = oneway === 'yes' || oneway === '1' || oneway === 'true';
     const reverse = oneway === '-1';
+    const cls = roadClass(way.tags['highway']);
+    const name = way.tags['name'] ?? '';
 
     for (let i = 0; i < way.refs.length - 1; i++) {
       const aId = way.refs[i]!;
@@ -45,12 +52,12 @@ export async function buildGraph(): Promise<GraphResult> {
       const dist = haversine(a.lat, a.lon, b.lat, b.lon);
 
       if (reverse) {
-        addEdge(bId, aId, dist); edgeCount++;
+        addEdge(bId, aId, dist, cls, name); edgeCount++;
       } else if (forward) {
-        addEdge(aId, bId, dist); edgeCount++;
+        addEdge(aId, bId, dist, cls, name); edgeCount++;
       } else {
-        addEdge(aId, bId, dist); edgeCount++;
-        addEdge(bId, aId, dist); edgeCount++;
+        addEdge(aId, bId, dist, cls, name); edgeCount++;
+        addEdge(bId, aId, dist, cls, name); edgeCount++;
       }
     }
   }
@@ -61,5 +68,5 @@ export async function buildGraph(): Promise<GraphResult> {
   console.log(`  Avg edges/node:    ${(edgeCount / adj.size).toFixed(2)}`);
   console.log(`  Skipped segments:  ${skipped.toLocaleString()} (node outside bbox)`);
 
-  return { adj, nodes };
+  return { adj, nodes, places };
 }

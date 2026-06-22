@@ -18,6 +18,9 @@ export class MinHeap {
 
   get size(): number { return this.data.length; }
 
+  /** Smallest f currently in the heap, or Infinity if empty. */
+  peekF(): number { return this.data.length > 0 ? this.data[0]!.f : Infinity; }
+
   private siftUp(i: number): void {
     while (i > 0) {
       const p = (i - 1) >> 1;
