@@ -11,16 +11,24 @@ import type maplibregl from 'maplibre-gl';
 import { KIND_COLOR, type PlaceKind } from './places.ts';
 
 const KIND_GLYPH: Partial<Record<PlaceKind, string>> = {
-  airport: '✈',
-  transit: '🚆',
-  hospital: '✚',
+  airport:    '✈',
+  train:      '🚆',
+  lrt:        '🚊',
+  bus:        '🚌',
+  hospital:   '✚',
+  clinic:     '✚',  // same icon, different badge color (orange-red vs red)
   university: '🎓',
-  shopping: '🛍',
-  park: '🌳',
-  landmark: '★',
-  worship: '🛐',
-  hotel: '🛏',
-  food: '🍴',
+  school:     '🏫',
+  shopping:   '🛍',
+  office:     '🏢',
+  park:       '🌳',
+  landmark:   '★',
+  attraction: '🎭',
+  services:   '🏦',
+  hotel:      '🛏',
+  food:       '🍴',
+  bar:        '🍺',
+  worship:    '🛐',
 };
 
 const PIX = 2;           // render at 2× for crisp icons (passed as pixelRatio)
