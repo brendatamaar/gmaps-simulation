@@ -73,7 +73,11 @@ new Uint32Array(ab, offNameIds, e).set(nameIds);
 const r5 = (x: number) => Math.round(x * 1e5) / 1e5;
 const placesOut = places
   .filter((p) => p.lat >= minLat && p.lat <= maxLat && p.lon >= minLng && p.lon <= maxLng)
-  .map((p) => ({ name: p.name, lat: r5(p.lat), lon: r5(p.lon), kind: p.kind }))
+  .map((p) => ({
+    name: p.name, lat: r5(p.lat), lon: r5(p.lon), kind: p.kind,
+    ...(p.area ? { area: Math.round(p.area) } : {}),
+    ...(p.addr ? { addr: p.addr } : {}),
+  }))
   .sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
 const placeCounts = placesOut.reduce<Record<string, number>>((m, p) => {
   m[p.kind] = (m[p.kind] ?? 0) + 1; return m;

@@ -19,21 +19,31 @@ export type Bbox = {
 
 export type PlaceKind =
   | "airport"
-  | "transit"
+  | "train"
+  | "lrt"
+  | "bus"
   | "hospital"
+  | "clinic"
   | "university"
+  | "school"
   | "shopping"
+  | "office"
   | "park"
   | "landmark"
-  | "worship"
+  | "attraction"
+  | "services"
   | "hotel"
   | "food"
+  | "bar"
+  | "worship"
   | "area";
 export type OsmPlace = {
   name: string;
   lat: number;
   lon: number;
   kind: PlaceKind;
+  area?: number; // polygon area in m², way-based places only
+  addr?: string; // e.g. "Jl. Gatot Subroto, Kuningan"
 };
 
 const HIGHWAY_KEEP = new Set([
@@ -70,35 +80,80 @@ const AREA_PLACES = new Set([
   "quarter",
   "borough",
 ]);
-const HISTORIC_KEEP = new Set([
-  "monument",
-  "memorial",
-  "castle",
-  "fort",
-  "archaeological_site",
-]);
-const TOURISM_KEEP = new Set([
-  "attraction",
-  "museum",
-  "gallery",
-  "viewpoint",
-  "aquarium",
-]);
-const EDU = new Set(["university", "college"]);
-const FOOD = new Set(["restaurant", "cafe", "fast_food", "food_court"]);
+// Major landmarks: iconic destinations worth showing at low zoom.
+const LANDMARK_HISTORIC = new Set(["monument", "castle", "fort", "archaeological_site"]);
+const LANDMARK_TOURISM  = new Set(["museum", "aquarium"]);
+// Minor attractions: worth visiting but surface only at higher zoom.
+// memorial is minor (too numerous); attraction/viewpoint/gallery are niche.
+const ATTRACTION_HISTORIC = new Set(["memorial"]);
+const ATTRACTION_TOURISM  = new Set(["attraction", "gallery", "viewpoint"]);
+// university/college: nodes + ways. school/kindergarten: ways-only to suppress
+// the flood of node duplicates common in Indonesian OSM data.
+const EDU_MAJOR = new Set(["university", "college"]);
+const EDU_MINOR = new Set(["school", "kindergarten"]);
+const FOOD = new Set(["restaurant", "cafe", "fast_food", "food_court", "ice_cream"]);
+const BAR  = new Set(["bar", "pub", "nightclub"]);
+const FOOD_SHOP = new Set(["bakery", "seafood", "pastry"]);
+const SERVICES = new Set(["bank", "pharmacy", "fuel", "post_office"]);
+// security = guard posts (not destinations), intentionally excluded.
+const OFFICE_TYPES = new Set(["government", "company", "ngo", "educational_institution"]);
+
+// Best-effort address string from OSM addr:* tags.
+// street  → "Jl. Gatot Subroto"
+// suburb  → kelurahan (most granular neighbourhood unit in Jakarta)
+// subdistrict → kecamatan (fallback when suburb absent)
+function buildAddr(tags: Record<string, string>): string | undefined {
+  const parts: string[] = [];
+  if (tags["addr:street"]) parts.push(tags["addr:street"]);
+  if (tags["addr:suburb"]) parts.push(tags["addr:suburb"]);
+  else if (tags["addr:subdistrict"]) parts.push(tags["addr:subdistrict"]);
+  return parts.length > 0 ? parts.join(", ") : undefined;
+}
+
+// Shoelace formula → approximate polygon area in m².
+function polygonAreaM2(refs: number[], nodes: Map<number, NodeCoord>): number {
+  const coords: Array<[number, number]> = [];
+  for (const ref of refs) {
+    const nd = nodes.get(ref);
+    if (nd) coords.push([nd.lat, nd.lon]);
+  }
+  if (coords.length < 3) return 0;
+  let area = 0;
+  const n = coords.length;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    area += coords[i]![1]! * coords[j]![0]!;
+    area -= coords[j]![1]! * coords[i]![0]!;
+  }
+  area = Math.abs(area) / 2;
+  const avgLat = coords.reduce((s, c) => s + c[0]!, 0) / n;
+  const mPerDeg = 111_320;
+  return area * mPerDeg * mPerDeg * Math.cos((avgLat * Math.PI) / 180);
+}
 
 function placeKind(
   tags: Record<string, string>,
   fromWay: boolean,
 ): PlaceKind | null {
   if (tags["aeroway"] === "aerodrome") return "airport";
-  if (tags["railway"] === "station" || tags["amenity"] === "bus_station")
-    return "transit";
-  if (tags["amenity"] === "hospital") return "hospital";
-  if (EDU.has(tags["amenity"]!)) return "university";
+  if (tags["amenity"] === "bus_station") return "bus";
+  if (tags["railway"] === "station" || tags["railway"] === "halt") {
+    const st = tags["station"];
+    if (st === "light_rail" || st === "subway" || st === "monorail") return "lrt";
+    return "train";
+  }
+  // Major vs minor healthcare — different render ranks.
+  if (tags["amenity"] === "hospital" || tags["healthcare"] === "hospital")
+    return "hospital";
+  if (tags["amenity"] === "clinic" || tags["healthcare"] === "clinic")
+    return "clinic";
+  // Major vs minor education — different render ranks.
+  if (EDU_MAJOR.has(tags["amenity"]!)) return "university";
+  if (fromWay && EDU_MINOR.has(tags["amenity"]!)) return "school";
   if (
     tags["shop"] === "mall" ||
     tags["shop"] === "department_store" ||
+    tags["shop"] === "supermarket" ||
     tags["amenity"] === "marketplace"
   )
     return "shopping";
@@ -106,18 +161,39 @@ function placeKind(
     tags["tourism"] === "zoo" ||
     tags["tourism"] === "theme_park" ||
     tags["leisure"] === "stadium" ||
-    tags["leisure"] === "park"
+    tags["leisure"] === "park" ||
+    tags["leisure"] === "garden" ||
+    tags["leisure"] === "sports_centre" ||
+    tags["leisure"] === "water_park" ||
+    tags["leisure"] === "nature_reserve"
   )
     return "park";
-  if (
-    TOURISM_KEEP.has(tags["tourism"]!) ||
-    HISTORIC_KEEP.has(tags["historic"]!) ||
-    tags["man_made"] === "tower"
-  )
+  if (LANDMARK_TOURISM.has(tags["tourism"]!) || LANDMARK_HISTORIC.has(tags["historic"]!))
     return "landmark";
+  if (
+    ATTRACTION_TOURISM.has(tags["tourism"]!) ||
+    ATTRACTION_HISTORIC.has(tags["historic"]!) ||
+    (fromWay && tags["man_made"] === "tower")
+  )
+    return "attraction";
+  if (
+    fromWay &&
+    (OFFICE_TYPES.has(tags["office"]!) ||
+      tags["building"] === "office" ||
+      tags["building"] === "commercial")
+  )
+    return "office";
+  if (SERVICES.has(tags["amenity"]!) || tags["healthcare"] === "pharmacy")
+    return "services";
+  if (
+    tags["tourism"] === "hotel" ||
+    tags["tourism"] === "guest_house" ||
+    tags["tourism"] === "hostel"
+  )
+    return "hotel";
+  if (BAR.has(tags["amenity"]!)) return "bar";
+  if (FOOD.has(tags["amenity"]!) || FOOD_SHOP.has(tags["shop"]!)) return "food";
   if (fromWay && tags["amenity"] === "place_of_worship") return "worship";
-  if (tags["tourism"] === "hotel") return "hotel";
-  if (FOOD.has(tags["amenity"]!)) return "food";
   if (AREA_PLACES.has(tags["place"]!)) return "area";
   return null;
 }
@@ -151,7 +227,10 @@ export async function parsePbf(
           nodes.set(id, { lat, lon });
           if (tags?.name) {
             const kind = placeKind(tags, false);
-            if (kind) places.push({ name: tags.name, lat, lon, kind });
+            if (kind) {
+              const addr = buildAddr(tags);
+              places.push({ name: tags.name, lat, lon, kind, ...(addr ? { addr } : {}) });
+            }
           }
         } else if (item.type === "way") {
           const tags = item.tags;
@@ -174,13 +253,18 @@ export async function parsePbf(
                   c++;
                 }
               }
-              if (c > 0)
+              if (c > 0) {
+                const area = polygonAreaM2(item.refs, nodes);
+                const addr = buildAddr(tags);
                 places.push({
                   name: tags.name,
                   lat: sLat / c,
                   lon: sLon / c,
                   kind,
+                  ...(area > 0 ? { area } : {}),
+                  ...(addr ? { addr } : {}),
                 });
+              }
             }
           }
         }
