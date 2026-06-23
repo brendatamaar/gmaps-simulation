@@ -5,78 +5,455 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Jakarta Router — Directions</title>
     <style>
-      * { box-sizing: border-box; }
-      html, body { margin: 0; height: 100%;
-        font-family: 'Roboto', 'Segoe UI', system-ui, Arial, sans-serif;
-        color: #202124; background: #e8eaed; }
-      #app { position: fixed; inset: 0; }
-      #map { position: absolute; inset: 0; cursor: default; }
-      .maplibregl-ctrl-attrib { font-size: 10px; }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        font-family: "Roboto", "Segoe UI", system-ui, Arial, sans-serif;
+        color: #202124;
+        background: #e8eaed;
+      }
+      #app {
+        position: fixed;
+        inset: 0;
+      }
+      #map {
+        position: absolute;
+        inset: 0;
+        cursor: default;
+      }
+      .maplibregl-ctrl-attrib {
+        font-size: 10px;
+      }
 
-      /* ── Directions card ─────────────────────────────────────────── */
-      #panel { position: fixed; top: 14px; left: 14px; z-index: 2;
-        width: 360px; max-height: calc(100vh - 28px); display: flex; flex-direction: column;
-        background: #fff; border-radius: 12px;
-        box-shadow: 0 1px 3px rgba(60,64,67,.3), 0 4px 12px rgba(60,64,67,.18);
-        overflow: hidden; }
-      .head { padding: 14px 16px 10px; }
-      .head h1 { margin: 0; font-size: 16px; font-weight: 500; }
-      .head .sub { color: #5f6368; font-size: 12px; margin-top: 2px; }
+      /* ── Panel ───────────────────────────────────────────────────────── */
+      #panel {
+        position: fixed;
+        top: 14px;
+        left: 14px;
+        z-index: 2;
+        width: 360px;
+        max-height: calc(100vh - 28px);
+        display: flex;
+        flex-direction: column;
+        background: #fff;
+        border-radius: 12px;
+        border-top: 3px solid #1a73e8;
+        box-shadow:
+          0 2px 6px rgba(60, 64, 67, 0.3),
+          0 6px 20px rgba(60, 64, 67, 0.2);
+        overflow: hidden;
+      }
 
-      /* mode tabs */
-      #modes { display: flex; gap: 4px; padding: 0 12px 8px; }
-      #modes button { flex: 1; padding: 8px 0; border: none; background: none; cursor: pointer;
-        color: #5f6368; font-size: 13px; border-radius: 8px; border-bottom: 3px solid transparent; }
-      #modes button:hover { background: #f1f3f4; }
-      #modes button.active { color: #1a73e8; border-bottom-color: #1a73e8; }
+      /* Header */
+      .head {
+        padding: 12px 16px 10px;
+        border-bottom: 1px solid #f1f3f4;
+      }
+      .head h1 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 600;
+      }
+      .head .sub {
+        color: #5f6368;
+        font-size: 12px;
+        margin-top: 2px;
+      }
 
-      /* origin / destination fields */
-      .fields { padding: 4px 16px 10px; }
-      .field { display: flex; align-items: center; gap: 10px; padding: 8px 10px;
-        background: #f1f3f4; border-radius: 8px; margin-bottom: 6px; font-size: 13px; }
-      .dot { width: 11px; height: 11px; border-radius: 50%; flex: none; }
-      .dot.o { background: #34a853; }
-      .dot.d { background: #ea4335; border-radius: 2px; }
-      .field .val { color: #3c4043; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .field .val.empty { color: #80868b; }
+      /* Mode selector — segmented pill control */
+      #modes {
+        padding: 10px 12px 8px;
+      }
+      .modes-group {
+        display: flex;
+        background: #f1f3f4;
+        border-radius: 10px;
+        padding: 3px;
+        gap: 2px;
+      }
+      #modes button {
+        flex: 1;
+        padding: 7px 0;
+        border: none;
+        background: transparent;
+        cursor: pointer;
+        color: #5f6368;
+        font-size: 13px;
+        border-radius: 8px;
+        font-family: inherit;
+        transition:
+          background 0.15s,
+          color 0.15s,
+          box-shadow 0.15s;
+      }
+      #modes button:hover:not(.active) {
+        background: rgba(0, 0, 0, 0.05);
+        color: #3c4043;
+      }
+      #modes button.active {
+        background: #fff;
+        color: #1a73e8;
+        font-weight: 500;
+        box-shadow:
+          0 1px 3px rgba(60, 64, 67, 0.25),
+          0 0 0 1px rgba(60, 64, 67, 0.08);
+      }
 
-      /* departure controls */
-      .controls { padding: 4px 16px 12px; border-bottom: 1px solid #ebedef; }
-      .controls .row { display: flex; align-items: center; justify-content: space-between; font-size: 13px; }
-      .controls label { color: #5f6368; }
-      #hourval { font-weight: 500; }
-      #hour { width: 100%; margin: 8px 0 6px; accent-color: #1a73e8; }
-      .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
-        font-size: 13px; color: #3c4043; }
-      .toggle input { accent-color: #1a73e8; }
+      /* Origin / destination with connector line */
+      .fields {
+        display: flex;
+        align-items: center;
+        padding: 6px 12px 10px 16px;
+        gap: 10px;
+        border-bottom: 1px solid #f1f3f4;
+      }
+      .fields-connector {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        flex: none;
+        padding: 2px 0;
+      }
+      .dot {
+        width: 11px;
+        height: 11px;
+        flex: none;
+      }
+      .dot.o {
+        background: #34a853;
+        border-radius: 50%;
+      }
+      .dot.d {
+        background: #ea4335;
+        border-radius: 2px;
+      }
+      .conn-line {
+        width: 2px;
+        height: 22px;
+        background: #dadce0;
+        margin: 4px 0;
+        border-radius: 1px;
+      }
+      .fields-inputs {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-width: 0;
+      }
+      /* Search inputs */
+      .field-input {
+        width: 100%;
+        padding: 8px 10px;
+        background: #f1f3f4;
+        border: 1.5px solid transparent;
+        border-radius: 8px;
+        font-size: 13px;
+        font-family: inherit;
+        color: #3c4043;
+        outline: none;
+        transition:
+          border-color 0.15s,
+          background 0.15s;
+      }
+      .field-input::placeholder {
+        color: #80868b;
+      }
+      .field-input:focus {
+        background: #fff;
+        border-color: #1a73e8;
+      }
 
-      /* scroll area: route cards + steps */
-      .scroll { overflow-y: auto; }
-      #routes { padding: 8px 12px 4px; }
-      .route-card { display: flex; align-items: baseline; gap: 10px; padding: 10px 12px;
-        border-radius: 10px; cursor: pointer; border: 1px solid transparent; }
-      .route-card:hover { background: #f8f9fa; }
-      .route-card.sel { background: #e8f0fe; border-color: #d2e3fc; }
-      .route-card .eta { font-size: 18px; font-weight: 500; color: #188038; }
-      .route-card.slow .eta { color: #c5221f; }
-      .route-card .meta { font-size: 12px; color: #5f6368; line-height: 1.4; }
-      .route-card .meta b { color: #3c4043; font-weight: 500; }
+      /* Suggestion dropdown — fixed-positioned via JS to escape panel overflow:hidden */
+      .suggestions {
+        position: fixed;
+        background: #fff;
+        border-radius: 10px;
+        box-shadow:
+          0 4px 12px rgba(60, 64, 67, 0.25),
+          0 1px 3px rgba(60, 64, 67, 0.15);
+        z-index: 100;
+        overflow: hidden;
+      }
+      .suggestions[hidden] {
+        display: none;
+      }
+      .sugg-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 12px;
+        cursor: pointer;
+        font-size: 13px;
+        transition: background 0.1s;
+      }
+      .sugg-item:hover,
+      .sugg-item.active {
+        background: #f1f3f4;
+      }
+      .sugg-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex: none;
+        align-self: flex-start;
+        margin-top: 4px;
+      }
+      .sugg-text {
+        flex: 1;
+        min-width: 0;
+      }
+      .sugg-name {
+        color: #202124;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sugg-name strong {
+        font-weight: 600;
+        color: #1a73e8;
+      }
+      .sugg-addr {
+        color: #80868b;
+        font-size: 11px;
+        margin-top: 1px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sugg-kind {
+        color: #80868b;
+        font-size: 11px;
+        white-space: nowrap;
+        flex: none;
+        align-self: flex-start;
+        margin-top: 2px;
+      }
+      .swap-btn {
+        background: #f1f3f4;
+        border: none;
+        border-radius: 50%;
+        width: 30px;
+        height: 30px;
+        cursor: pointer;
+        font-size: 16px;
+        color: #5f6368;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex: none;
+        transition:
+          background 0.15s,
+          color 0.15s;
+      }
+      .swap-btn:hover {
+        background: #e8f0fe;
+        color: #1a73e8;
+      }
 
-      #steps { padding: 4px 8px 10px; }
-      .step { display: grid; grid-template-columns: 26px 1fr auto; align-items: start; gap: 8px;
-        padding: 9px 8px; border-top: 1px solid #f1f3f4; font-size: 13px; }
-      .step .g { color: #5f6368; font-size: 15px; text-align: center; line-height: 1.2; }
-      .step .t { color: #3c4043; }
-      .step .d { color: #80868b; font-size: 12px; white-space: nowrap; }
+      /* Departure controls */
+      .controls {
+        padding: 12px 16px;
+        border-bottom: 1px solid #f1f3f4;
+      }
+      .time-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 8px;
+      }
+      .time-label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 13px;
+        color: #5f6368;
+      }
+      .ctrl-icon {
+        font-size: 14px;
+      }
+      #hourval {
+        font-size: 20px;
+        font-weight: 600;
+        color: #202124;
+        letter-spacing: -0.5px;
+      }
+      #hour {
+        width: 100%;
+        margin: 0 0 12px;
+        accent-color: #1a73e8;
+      }
 
-      .foot { padding: 10px 16px 14px; }
-      .note { color: #80868b; font-size: 11px; line-height: 1.5; margin-bottom: 10px; }
-      #clear { width: 100%; padding: 9px; cursor: pointer; font-size: 13px;
-        background: #fff; color: #1a73e8; border: 1px solid #dadce0; border-radius: 8px; font-weight: 500; }
-      #clear:hover { background: #f8f9fa; }
-      .legend { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; color: #5f6368; font-size: 11px; }
-      .bar { flex: 1; height: 6px; border-radius: 3px;
-        background: linear-gradient(90deg, #34a853, #f9ab00, #ea4335); }
+      /* Custom toggle switches */
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        cursor: pointer;
+        user-select: none;
+        font-size: 13px;
+        color: #3c4043;
+        margin-bottom: 10px;
+      }
+      .toggle:last-of-type {
+        margin-bottom: 0;
+      }
+      .toggle input[type="checkbox"] {
+        appearance: none;
+        -webkit-appearance: none;
+        width: 34px;
+        height: 18px;
+        border-radius: 9px;
+        background: #bdc1c6;
+        position: relative;
+        cursor: pointer;
+        transition: background 0.2s;
+        flex: none;
+      }
+      .toggle input[type="checkbox"]::after {
+        content: "";
+        position: absolute;
+        width: 14px;
+        height: 14px;
+        background: #fff;
+        border-radius: 50%;
+        top: 2px;
+        left: 2px;
+        transition: transform 0.2s;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+      }
+      .toggle input[type="checkbox"]:checked {
+        background: #1a73e8;
+      }
+      .toggle input[type="checkbox"]:checked::after {
+        transform: translateX(16px);
+      }
+      .toggle input[type="checkbox"]:disabled {
+        background: #e8eaed;
+        cursor: not-allowed;
+      }
+
+      /* Traffic legend — inline below the traffic toggle */
+      .traffic-legend {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin: -4px 0 10px 44px;
+        color: #5f6368;
+        font-size: 11px;
+      }
+      .bar {
+        flex: 1;
+        height: 5px;
+        border-radius: 3px;
+        background: linear-gradient(90deg, #34a853, #f9ab00, #ea4335);
+      }
+
+      /* Route cards with left color stripe */
+      .scroll {
+        overflow-y: auto;
+      }
+      #routes {
+        padding: 8px 12px 4px;
+      }
+      .route-card {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        cursor: pointer;
+        margin-bottom: 4px;
+        box-shadow: inset 3px 0 0 0 #9aa0a6;
+        transition: background 0.1s;
+      }
+      .route-card:hover {
+        background: #f8f9fa;
+      }
+      .route-card.fastest {
+        box-shadow: inset 3px 0 0 0 #34a853;
+      }
+      .route-card.sel {
+        background: #e8f0fe;
+        box-shadow: inset 3px 0 0 0 #1a73e8;
+      }
+      .route-card .eta {
+        font-size: 18px;
+        font-weight: 500;
+        color: #188038;
+      }
+      .route-card.slow .eta {
+        color: #c5221f;
+      }
+      .route-card .meta {
+        font-size: 12px;
+        color: #5f6368;
+        line-height: 1.4;
+      }
+      .route-card .meta b {
+        color: #3c4043;
+        font-weight: 500;
+      }
+
+      /* Turn-by-turn steps */
+      #steps {
+        padding: 4px 8px 10px;
+      }
+      .step {
+        display: grid;
+        grid-template-columns: 26px 1fr auto;
+        align-items: start;
+        gap: 8px;
+        padding: 9px 8px;
+        border-top: 1px solid #f1f3f4;
+        font-size: 13px;
+      }
+      .step .g {
+        color: #5f6368;
+        font-size: 15px;
+        text-align: center;
+        line-height: 1.2;
+      }
+      .step .t {
+        color: #3c4043;
+      }
+      .step .d {
+        color: #80868b;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      /* Footer */
+      .foot {
+        padding: 10px 16px 14px;
+        border-top: 1px solid #f1f3f4;
+      }
+      .note {
+        color: #80868b;
+        font-size: 11px;
+        line-height: 1.5;
+        margin-bottom: 10px;
+      }
+      #clear {
+        width: 100%;
+        padding: 9px;
+        cursor: pointer;
+        font-size: 13px;
+        font-family: inherit;
+        background: #fff4f4;
+        color: #c5221f;
+        border: 1px solid #f5c6c6;
+        border-radius: 8px;
+        font-weight: 500;
+        transition: background 0.15s;
+      }
+      #clear:hover {
+        background: #fce8e8;
+      }
     </style>
   </head>
   <body>
@@ -84,26 +461,70 @@
       <div id="map"></div>
       <div id="panel">
         <div class="head">
-          <h1>Jakarta Router</h1>
+          <h1>Route Simulation</h1>
           <div class="sub" id="hint">Loading map…</div>
         </div>
 
         <div id="modes">
-          <button data-mode="drive" class="active">🚗 Drive</button>
-          <button data-mode="walk">🚶 Walk</button>
-          <button data-mode="bike">🚲 Bike</button>
+          <div class="modes-group">
+            <button data-mode="drive" class="active">🚗 Drive</button>
+            <button data-mode="walk">🚶 Walk</button>
+            <button data-mode="bike">🚲 Bike</button>
+          </div>
         </div>
 
         <div class="fields">
-          <div class="field"><span class="dot o"></span><span class="val empty" id="origin">Click the map to set origin</span></div>
-          <div class="field"><span class="dot d"></span><span class="val empty" id="dest">Then click to set destination</span></div>
+          <div class="fields-connector">
+            <span class="dot o"></span>
+            <div class="conn-line"></div>
+            <span class="dot d"></span>
+          </div>
+          <div class="fields-inputs">
+            <input
+              class="field-input"
+              id="origin"
+              placeholder="Search or click map to set origin"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <input
+              class="field-input"
+              id="dest"
+              placeholder="Search or click map for destination"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+          <button class="swap-btn" id="swap" title="Swap endpoints">⇅</button>
         </div>
 
         <div class="controls">
-          <div class="row"><label for="hour">Departure time</label><span id="hourval">08:00</span></div>
-          <input type="range" id="hour" min="0" max="23.5" step="0.5" value="8" />
-          <label class="toggle"><input type="checkbox" id="traffic" checked /> Live traffic (time-of-day)</label>
-          <label class="toggle"><input type="checkbox" id="showplaces" checked /> Places (zoom in to see)</label>
+          <div class="time-row">
+            <div class="time-label">
+              <span class="ctrl-icon">⏱</span><span>Departure time</span>
+            </div>
+            <span id="hourval">08:00</span>
+          </div>
+          <input
+            type="range"
+            id="hour"
+            min="0"
+            max="23.5"
+            step="0.5"
+            value="8"
+          />
+          <label class="toggle"
+            ><input type="checkbox" id="traffic" checked /> Live traffic
+            (time-of-day)</label
+          >
+          <div class="traffic-legend">
+            <span>low</span>
+            <div class="bar"></div>
+            <span>peak</span>
+          </div>
+          <label class="toggle"
+            ><input type="checkbox" id="showplaces" checked /> Places</label
+          >
         </div>
 
         <div class="scroll">
@@ -112,12 +533,15 @@
         </div>
 
         <div class="foot">
-          <div class="legend"><span>free</span><div class="bar"></div><span>jam</span></div>
           <div class="note" id="modenote"></div>
-          <button id="clear">Clear</button>
+          <button id="clear">Clear route</button>
         </div>
       </div>
     </div>
+    <!-- Fixed-positioned outside #panel to escape overflow:hidden -->
+    <div class="suggestions" id="origin-sugg" hidden></div>
+    <div class="suggestions" id="dest-sugg" hidden></div>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

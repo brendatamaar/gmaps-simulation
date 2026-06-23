@@ -23,7 +23,14 @@ import {
   type TrafficModel,
   type TravelMode,
 } from "./traffic.ts";
-import { loadPlaces, placesFC, ZMIN, type Place } from "./places.ts";
+import {
+  loadPlaces,
+  placesFC,
+  ZMIN,
+  KIND_COLOR,
+  type Place,
+  type PlaceKind,
+} from "./places.ts";
 import { addPlaceIcons } from "./place-icons.ts";
 
 // Light, label-rich CARTO Positron vector basemap: keyless, Google-ish tone.
@@ -106,7 +113,7 @@ function setData(id: string, data: object) {
 
 // Place layers are thinned by the live zoom: a feature shows once the zoom
 // reaches its precomputed `minzoom`. Labels trail their dot by one level so the
-// map fills in gradually, like Google.
+// map fills in gradually.
 const poiFilter = (z: number): maplibregl.FilterSpecification => [
   "all",
   ["!=", ["get", "kind"], "area"],
@@ -134,14 +141,12 @@ function renderFields() {
     i === null
       ? null
       : (label ?? `${graph.lats[i]!.toFixed(4)}, ${graph.lons[i]!.toFixed(4)}`);
-  const o = $("origin"),
-    d = $("dest");
+  const o = $("origin") as HTMLInputElement;
+  const d = $("dest") as HTMLInputElement;
   const ov = fmt(startIdx, startLabel),
     dv = fmt(endIdx, endLabel);
-  o.textContent = ov ?? "Click the map to set origin";
-  o.classList.toggle("empty", ov === null);
-  d.textContent = dv ?? "Then click to set destination";
-  d.classList.toggle("empty", dv === null);
+  if (document.activeElement !== o) o.value = ov ?? "";
+  if (document.activeElement !== d) d.value = dv ?? "";
 }
 
 function renderCards() {
@@ -152,7 +157,10 @@ function renderCards() {
     const steps = buildDirections(graph, r.path);
     const via = primaryRoad(steps);
     const card = document.createElement("div");
-    card.className = "route-card" + (i === selected ? " sel" : "");
+    const classes = ["route-card"];
+    if (i === 0) classes.push("fastest");
+    if (i === selected) classes.push("sel");
+    card.className = classes.join(" ");
     card.innerHTML =
       `<div class="eta" style="color:${i === 0 ? "#188038" : "#5f6368"}">${formatEta(r.etaSec)}</div>` +
       `<div class="meta"><b>${(r.distanceM / 1000).toFixed(1)} km</b>` +
@@ -183,6 +191,31 @@ function renderRoutesOnMap() {
   if (!mapReady) return;
   setData("alts", altsFC());
   setData("sel", selectedFC());
+}
+
+function fitToRoute() {
+  if (!mapReady || routes.length === 0) return;
+  const r = routes[selected];
+  if (!r || r.path.length === 0) return;
+  let minLat = Infinity,
+    maxLat = -Infinity;
+  let minLon = Infinity,
+    maxLon = -Infinity;
+  for (const idx of r.path) {
+    const lat = graph.lats[idx]!,
+      lon = graph.lons[idx]!;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+    if (lon < minLon) minLon = lon;
+    if (lon > maxLon) maxLon = lon;
+  }
+  map.fitBounds(
+    [
+      [minLon, minLat],
+      [maxLon, maxLat],
+    ],
+    { padding: { top: 60, bottom: 60, left: 400, right: 60 }, duration: 800 },
+  );
 }
 
 function renderAll() {
@@ -239,6 +272,7 @@ function recomputeFull() {
       : "No route found — try other points.",
   );
   renderAll();
+  if (routes.length > 0) fitToRoute();
 }
 
 // Single fastest route only, cheap enough to run live while dragging the slider.
@@ -282,13 +316,40 @@ function setEndpoint(idx: number, label: string | null = null) {
     routes = [];
     setMarker("origin", idx);
     setMarker("dest", null);
-    setHint("Click the map to set the destination.");
+    setHint("Search or click the map to set the destination.");
     renderAll();
   } else {
     endIdx = idx;
     endLabel = label;
     setMarker("dest", idx);
     recomputeFull();
+  }
+}
+
+// Used by search: set a specific field without the state-machine reset.
+function setEndpointDirect(
+  which: "origin" | "dest",
+  idx: number,
+  label: string,
+) {
+  if (which === "origin") {
+    startIdx = idx;
+    startLabel = label;
+    setMarker("origin", startIdx);
+  } else {
+    endIdx = idx;
+    endLabel = label;
+    setMarker("dest", endIdx);
+  }
+  if (startIdx !== null && endIdx !== null) {
+    recomputeFull();
+  } else {
+    setHint(
+      startIdx === null
+        ? "Search or click the map to set the origin."
+        : "Search or click the map to set the destination.",
+    );
+    renderAll();
   }
 }
 
@@ -321,7 +382,7 @@ function clearAll() {
   selected = 0;
   setMarker("origin", null);
   setMarker("dest", null);
-  setHint("Click the map to set the origin.");
+  setHint("Search or click the map to set the origin.");
   renderAll();
 }
 
@@ -349,9 +410,193 @@ function onMapClick(e: maplibregl.MapMouseEvent) {
   setEndpoint(nearestNode(graph, e.lngLat.lat, e.lngLat.lng));
 }
 
+// Search
+const KIND_LABEL: Record<string, string> = {
+  airport: "Airport",
+  train: "Train station",
+  lrt: "LRT station",
+  bus: "Bus terminal",
+  hospital: "Hospital",
+  clinic: "Clinic",
+  university: "University",
+  school: "School",
+  shopping: "Shopping",
+  office: "Office",
+  park: "Park",
+  landmark: "Landmark",
+  attraction: "Attraction",
+  services: "Services",
+  hotel: "Hotel",
+  food: "Restaurant",
+  bar: "Bar",
+  worship: "Place of worship",
+  area: "Area",
+};
+
+function nearestAreaName(lat: number, lon: number): string | null {
+  const cosLat = Math.cos((lat * Math.PI) / 180);
+  let bestD = Infinity;
+  let bestName: string | null = null;
+  for (const p of places) {
+    if (p.kind !== "area") continue;
+    const dlat = (p.lat - lat) * 111_000;
+    const dlon = (p.lon - lon) * 111_000 * cosLat;
+    const d = dlat * dlat + dlon * dlon;
+    if (d < bestD) {
+      bestD = d;
+      bestName = p.name;
+    }
+  }
+  return bestD < 4_000 * 4_000 ? bestName : null;
+}
+
+function escHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function highlightMatch(text: string, q: string): string {
+  const i = text.toLowerCase().indexOf(q.toLowerCase());
+  if (i < 0) return escHtml(text);
+  return (
+    escHtml(text.slice(0, i)) +
+    "<strong>" +
+    escHtml(text.slice(i, i + q.length)) +
+    "</strong>" +
+    escHtml(text.slice(i + q.length))
+  );
+}
+
+function wireSearch(inputId: "origin" | "dest", suggId: string) {
+  const input = $(inputId) as HTMLInputElement;
+  const sugg = $(suggId) as HTMLElement;
+  let activeIdx = -1;
+  let currentResults: Place[] = [];
+
+  function positionSugg() {
+    const rect = input.getBoundingClientRect();
+    sugg.style.top = `${rect.bottom + 4}px`;
+    sugg.style.left = `${rect.left}px`;
+    sugg.style.width = `${rect.width}px`;
+  }
+
+  function close() {
+    sugg.hidden = true;
+    activeIdx = -1;
+    currentResults = [];
+  }
+
+  function setActive(i: number) {
+    sugg
+      .querySelectorAll<HTMLElement>(".sugg-item")
+      .forEach((el, j) => el.classList.toggle("active", j === i));
+    activeIdx = i;
+  }
+
+  function selectSugg(i: number) {
+    const p = currentResults[i];
+    if (!p) return;
+    input.value = p.name;
+    close();
+    setEndpointDirect(inputId, nearestNode(graph, p.lat, p.lon), p.name);
+  }
+
+  function open(results: Place[], q: string) {
+    currentResults = results;
+    activeIdx = -1;
+    sugg.innerHTML = "";
+    results.forEach((p, i) => {
+      const item = document.createElement("div");
+      const location = p.addr ?? nearestAreaName(p.lat, p.lon);
+      item.className = "sugg-item";
+      item.innerHTML =
+        `<span class="sugg-dot" style="background:${KIND_COLOR[p.kind as PlaceKind]}"></span>` +
+        `<div class="sugg-text">` +
+        `<div class="sugg-name">${highlightMatch(p.name, q)}</div>` +
+        (location ? `<div class="sugg-addr">${escHtml(location)}</div>` : "") +
+        `</div>` +
+        `<span class="sugg-kind">${escHtml(KIND_LABEL[p.kind] ?? p.kind)}</span>`;
+      item.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        selectSugg(i);
+      });
+      sugg.appendChild(item);
+    });
+    if (results.length > 0) {
+      positionSugg();
+      sugg.hidden = false;
+    } else {
+      sugg.hidden = true;
+    }
+  }
+
+  input.addEventListener("input", () => {
+    const q = input.value.trim();
+    if (!q) {
+      close();
+      return;
+    }
+    const ql = q.toLowerCase();
+    const results = places
+      .filter((p) => p.kind !== "area" && p.name.toLowerCase().includes(ql))
+      .sort((a, b) => {
+        const aS = a.name.toLowerCase().startsWith(ql) ? 0 : 1;
+        const bS = b.name.toLowerCase().startsWith(ql) ? 0 : 1;
+        if (aS !== bS) return aS - bS;
+        return a.name.length - b.name.length;
+      })
+      .slice(0, 6);
+    open(results, q);
+  });
+
+  input.addEventListener("keydown", (e) => {
+    if (!currentResults.length) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive(Math.min(activeIdx + 1, currentResults.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive(Math.max(activeIdx - 1, 0));
+    } else if (e.key === "Enter" && activeIdx >= 0) {
+      e.preventDefault();
+      selectSugg(activeIdx);
+    } else if (e.key === "Escape") {
+      close();
+      input.blur();
+    }
+  });
+
+  input.addEventListener("focus", () => {
+    if (input.value) input.select();
+  });
+
+  input.addEventListener("blur", () => {
+    setTimeout(() => {
+      close();
+      renderFields();
+    }, 150);
+  });
+}
+
 // Controls
 function wireControls() {
   $("clear").addEventListener("click", clearAll);
+
+  $("swap").addEventListener("click", () => {
+    [startIdx, endIdx] = [endIdx, startIdx];
+    [startLabel, endLabel] = [endLabel, startLabel];
+    setMarker("origin", startIdx);
+    setMarker("dest", endIdx);
+    if (startIdx !== null && endIdx !== null) {
+      recomputeFull();
+    } else {
+      setHint(
+        startIdx === null
+          ? "Click the map to set the origin."
+          : "Click the map to set the destination.",
+      );
+      renderAll();
+    }
+  });
 
   document
     .querySelectorAll<HTMLButtonElement>("#modes button")
@@ -390,6 +635,9 @@ function wireControls() {
       map.setLayoutProperty(ly, "visibility", vis);
     }
   });
+
+  wireSearch("origin", "origin-sugg");
+  wireSearch("dest", "dest-sugg");
 }
 
 async function boot() {
@@ -487,15 +735,22 @@ async function boot() {
         "symbol-sort-key": [
           "match",
           ["get", "kind"],
-          ["airport", "transit", "hospital"],
+          ["airport", "train", "lrt"],
           1,
-          ["shopping", "university", "landmark"],
+          ["bus", "hospital"],
           2,
-          ["park", "hotel"],
+          [
+            "university",
+            "shopping",
+            "office",
+            "park",
+            "landmark",
+            "attraction",
+          ],
           3,
-          "worship",
+          ["services", "hotel", "food"],
           4,
-          "food",
+          ["clinic", "school", "bar", "worship"],
           5,
           3,
         ],
@@ -542,7 +797,7 @@ async function boot() {
     applyZoomThinning(true);
     renderRoutesOnMap();
     setHint(
-      `${graph.n.toLocaleString()} nodes loaded. Click the map to set the origin.`,
+      `${graph.n.toLocaleString()} nodes loaded. Search or click the map to set the origin.`,
     );
   });
 
