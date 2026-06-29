@@ -11,6 +11,10 @@
     "export:graph": "node --import ./node_modules/tsx/dist/esm/index.cjs src/export-graph.ts",
     "test:ch": "node --import ./node_modules/tsx/dist/esm/index.cjs src/test-ch.ts",
     "ch:city": "node --import ./node_modules/tsx/dist/esm/index.cjs src/bench-ch.ts",
+    "gen:traffic": "node --import ./node_modules/tsx/dist/esm/index.cjs src/gen-traffic.ts",
+    "verify:traffic-data": "node --import ./node_modules/tsx/dist/esm/index.cjs src/verify-traffic-data.ts",
+    "inspect:traffic": "node --import ./node_modules/tsx/dist/esm/index.cjs src/inspect-traffic.ts",
+    "verify:traffic-routing": "node --import ./node_modules/tsx/dist/esm/index.cjs src/verify-traffic-routing.ts",
     "dev:web": "vite",
     "build:web": "vite build",
     "preview:web": "vite preview"

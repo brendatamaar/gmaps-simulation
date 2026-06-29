@@ -15,6 +15,7 @@
 // Speed constants mirror src/lib/roadclass.ts (kept in sync by hand).
 
 import { cheapestEdge, haversine, type Graph } from './graph.ts';
+import type { TrafficData } from './trafficData.ts';
 
 export type TravelMode = 'drive' | 'walk' | 'bike';
 
@@ -36,17 +37,25 @@ const WALK_STRETCH = MAX_SPEED_KMH / WALK_KMH;
 const BIKE_STRETCH = MAX_SPEED_KMH / BIKE_KMH;
 
 // Jakarta city centre (Monas) anchors the static spatial-congestion field.
+// These constants are kept so precompute() still builds a valid staticMult
+// fallback — used when traffic.bin has not yet loaded (td = null).
 const CENTER_LAT = -6.1754;
 const CENTER_LON = 106.8272;
-const CENTER_PEAK = 0.6;     // up to +60% slower in the core (Level 1, static)
-const CENTER_SCALE_M = 6000; // gaussian falloff radius
+const CENTER_PEAK = 0.6;
+const CENTER_SCALE_M = 6000;
 
 export type TrafficModel = {
-  staticMult: Float64Array; // [e] Level-1 spatial congestion, ≥1 (static, drive-only)
+  // staticMult[e] — Level-1 CBD spatial factor, ≥1. Used as fallback when
+  // td is null. Dormant (not applied) once td is loaded, because td already
+  // incorporates the spatial factor from the demand model.
+  staticMult: Float64Array;
+  // td — calibrated per-edge per-hour data from traffic.bin (null until loaded).
+  // When non-null, REPLACES staticMult × congestionMultiplier in the drive path.
+  td: TrafficData | null;
 };
 
-// Precompute the static spatial-congestion field once (it needs a haversine per
-// edge). The per-class speed and time-of-day curve are cheap and applied later.
+// Precompute the static spatial-congestion field once. This is the Level-1
+// fallback model; it becomes dormant after traffic.bin loads (td takes over).
 export function precompute(graph: Graph): TrafficModel {
   const { n, e, offsets, targets, lats, lons } = graph;
   const staticMult = new Float64Array(e);
@@ -61,7 +70,7 @@ export function precompute(graph: Graph): TrafficModel {
       staticMult[ei] = 1 + CENTER_PEAK * Math.exp(-((d / CENTER_SCALE_M) ** 2));
     }
   }
-  return { staticMult };
+  return { staticMult, td: null };
 }
 
 function bump(hour: number, center: number, width: number): number {
@@ -69,8 +78,9 @@ function bump(hour: number, center: number, width: number): number {
   return Math.exp(-(d * d) / (2 * width * width));
 }
 
-// Level-2 time-of-day multiplier, ≥1. Deterministic, no data. Arterials clog
-// hard at the 7:30/17:30 peaks; locals far less. Overnight ≈ free flow.
+// Level-2 time-of-day multiplier. Used in the fallback path (td = null).
+// When td is loaded this function is no longer called for weight computation,
+// but it remains exported for external consumers (e.g. tests, display code).
 export function congestionMultiplier(hour: number, cls: number): number {
   const peak = bump(hour, 7.5, 1.3) + bump(hour, 17.5, 1.8);
   const midday = bump(hour, 13, 2.5);
@@ -81,62 +91,128 @@ export function congestionMultiplier(hour: number, cls: number): number {
   return 1 + intensity;
 }
 
-// Per-hour congestion factors, one per road class (drive only). Computing the 8
-// values once avoids calling the curve per-edge across 1.8M edges.
+// Per-class time-of-day factors (fallback only).
 function classFactors(hour: number, trafficOn: boolean): Float64Array {
   const f = new Float64Array(8);
   for (let c = 0; c < 8; c++) f[c] = trafficOn ? congestionMultiplier(hour, c) : 1;
   return f;
 }
 
-// metres-equivalent weight for one edge under a mode. Driving folds in road
-// class + congestion; walk/bike are a flat stretch with no traffic.
-function edgeWeight(
-  len: number, cls: number, sMult: number, byClass: Float64Array,
-  trafficOn: boolean, mode: TravelMode,
-): number {
-  if (mode === 'walk') return len * WALK_STRETCH;
-  if (mode === 'bike') return len * BIKE_STRETCH;
-  const ff = len * STRETCH[cls]!;
-  return trafficOn ? ff * sMult * byClass[cls]! : ff;
-}
-
 // Write the live weights straight into `out` (a view over WASM linear memory).
+//
+// Drive mode — two sub-paths:
+//   td non-null → data-driven (traffic.bin): per-edge calibrated multiplier.
+//     weight[ei] = len × STRETCH[cls] × mult_from_traffic_bin
+//     staticMult and congestionMultiplier are NOT applied: both CBD-spatial and
+//     time-of-day effects are already baked into the calibrated multiplier.
+//   td null → fallback (synthetic): Level-1 × Level-2 as before.
+//     weight[ei] = len × STRETCH[cls] × staticMult[ei] × byClass[cls]
+// Walk / bike modes are unchanged: flat stretch, no traffic.
+// The A* heuristic (haversine metres) stays admissible: mult ≥ 1 means every
+// weight ≥ length ≥ haversine, so the heuristic never overestimates.
 export function fillWeights(
   out: Float64Array, graph: Graph, model: TrafficModel,
   hour: number, trafficOn: boolean, mode: TravelMode = 'drive',
 ): void {
   const { e, classes, distances } = graph;
-  const { staticMult } = model;
-  const byClass = classFactors(hour, trafficOn);
-  for (let i = 0; i < e; i++) {
-    out[i] = edgeWeight(distances[i]!, classes[i]!, staticMult[i]!, byClass, trafficOn, mode);
+  if (mode === 'walk') {
+    for (let i = 0; i < e; i++) out[i] = distances[i]! * WALK_STRETCH;
+    return;
+  }
+  if (mode === 'bike') {
+    for (let i = 0; i < e; i++) out[i] = distances[i]! * BIKE_STRETCH;
+    return;
+  }
+  // Drive ──────────────────────────────────────────────────────────────────
+  if (!trafficOn) {
+    for (let i = 0; i < e; i++) out[i] = distances[i]! * STRETCH[classes[i]!]!;
+    return;
+  }
+  const { td, staticMult } = model;
+  if (td) {
+    // Data-driven path. Inlined for hot-path performance (avoids per-edge
+    // function call and repeated h computation over 1.8 M edges).
+    const h = Math.floor(((hour % 24) + 24) % 24);
+    const data = td._data, range = td._range;
+    for (let i = 0; i < e; i++) {
+      out[i] = distances[i]! * STRETCH[classes[i]!]! * (1.0 + (data[i * 24 + h]! / 255) * range);
+    }
+  } else {
+    // Fallback: synthetic Level-1 × Level-2.
+    const byClass = classFactors(hour, true);
+    for (let i = 0; i < e; i++) {
+      out[i] = distances[i]! * STRETCH[classes[i]!]! * staticMult[i]! * byClass[classes[i]!]!;
+    }
   }
 }
 
-// Σ true metres-equivalent weight along a path (independent of the WASM buffer's
-// current contents), used to score alternative routes under the live model.
+// Σ true metres-equivalent weight along a path (independent of the WASM buffer),
+// used to score alternative routes under the live model. Mirrors fillWeights logic.
 export function pathWeight(
   graph: Graph, model: TrafficModel, path: Int32Array,
   hour: number, trafficOn: boolean, mode: TravelMode,
 ): number {
   const { classes, distances } = graph;
-  const byClass = classFactors(hour, trafficOn);
   let sum = 0;
-  for (let k = 1; k < path.length; k++) {
-    const ei = cheapestEdge(graph, path[k - 1]!, path[k]!);
-    if (ei < 0) continue;
-    sum += edgeWeight(distances[ei]!, classes[ei]!, model.staticMult[ei]!, byClass, trafficOn, mode);
+  if (mode === 'walk') {
+    for (let k = 1; k < path.length; k++) {
+      const ei = cheapestEdge(graph, path[k - 1]!, path[k]!);
+      if (ei >= 0) sum += distances[ei]! * WALK_STRETCH;
+    }
+    return sum;
+  }
+  if (mode === 'bike') {
+    for (let k = 1; k < path.length; k++) {
+      const ei = cheapestEdge(graph, path[k - 1]!, path[k]!);
+      if (ei >= 0) sum += distances[ei]! * BIKE_STRETCH;
+    }
+    return sum;
+  }
+  // Drive
+  if (!trafficOn) {
+    for (let k = 1; k < path.length; k++) {
+      const ei = cheapestEdge(graph, path[k - 1]!, path[k]!);
+      if (ei >= 0) sum += distances[ei]! * STRETCH[classes[ei]!]!;
+    }
+    return sum;
+  }
+  const { td, staticMult } = model;
+  if (td) {
+    const h = Math.floor(((hour % 24) + 24) % 24);
+    const data = td._data, range = td._range;
+    for (let k = 1; k < path.length; k++) {
+      const ei = cheapestEdge(graph, path[k - 1]!, path[k]!);
+      if (ei < 0) continue;
+      sum += distances[ei]! * STRETCH[classes[ei]!]! * (1.0 + (data[ei * 24 + h]! / 255) * range);
+    }
+  } else {
+    const byClass = classFactors(hour, true);
+    for (let k = 1; k < path.length; k++) {
+      const ei = cheapestEdge(graph, path[k - 1]!, path[k]!);
+      if (ei < 0) continue;
+      sum += distances[ei]! * STRETCH[classes[ei]!]! * staticMult[ei]! * byClass[classes[ei]!]!;
+    }
   }
   return sum;
 }
 
-// Congestion multiplier → colour. 1.0 green (free) → ~2 amber → ≥3 red.
+// Congestion multiplier → colour.
+// Two-segment gradient matching the panel legend:
+//   1.0 → #34a853 (green)  2.0 → #f9ab00 (amber)  ≥3.0 → #ea4335 (red)
 export function congestionColor(mult: number): string {
-  const x = Math.max(0, Math.min(1, (mult - 1) / 2)); // 1..3 → 0..1
-  const r = Math.round(46 + x * (255 - 46));
-  const g = Math.round(194 - x * (194 - 59));
-  const b = Math.round(126 - x * (126 - 92));
+  const x = Math.max(0, Math.min(1, (mult - 1) / 2)); // mult 1..3 → 0..1
+  let r: number, g: number, b: number;
+  if (x < 0.5) {
+    const t = x * 2;                          // green → amber
+    r = Math.round(52  + t * (249 - 52));
+    g = Math.round(168 + t * (171 - 168));
+    b = Math.round(83  + t * (0   - 83));
+  } else {
+    const t = (x - 0.5) * 2;                  // amber → red
+    r = Math.round(249 + t * (234 - 249));
+    g = Math.round(171 + t * (67  - 171));
+    b = Math.round(0   + t * (53  - 0));
+  }
   return `rgb(${r},${g},${b})`;
 }
 
@@ -164,8 +240,7 @@ export function arrivalClock(departHour: number, seconds: number): string {
   return formatClock(departHour + seconds / 3600);
 }
 
-// True road distance of a path, summing per-segment haversine (edges are
-// straight haversine segments, so this equals Σ length without an edge lookup).
+// True road distance of a path, summing per-segment haversine.
 export function pathDistanceMeters(graph: Graph, path: Int32Array): number {
   let m = 0;
   for (let k = 1; k < path.length; k++) {
@@ -176,17 +251,30 @@ export function pathDistanceMeters(graph: Graph, path: Int32Array): number {
 }
 
 // Per-segment congestion multiplier along a path, for colouring the route.
-// Only driving is congestion-sensitive; walk/bike return all 1 (free).
+// model parameter added to access td; signature otherwise unchanged.
+// Walk/bike always return all-1 (no traffic).
 export function segmentMultipliers(
-  graph: Graph, path: Int32Array, hour: number, trafficOn: boolean, mode: TravelMode = 'drive',
+  graph: Graph, model: TrafficModel, path: Int32Array,
+  hour: number, trafficOn: boolean, mode: TravelMode = 'drive',
 ): Float64Array {
   const out = new Float64Array(Math.max(0, path.length - 1));
   if (mode !== 'drive' || !trafficOn) { out.fill(1); return out; }
   const { classes } = graph;
-  for (let k = 1; k < path.length; k++) {
-    const ei = cheapestEdge(graph, path[k - 1]!, path[k]!);
-    const cls = ei >= 0 ? classes[ei]! : 5; // 5 = residential default
-    out[k - 1] = congestionMultiplier(hour, cls);
+  const { td } = model;
+  if (td) {
+    const h = Math.floor(((hour % 24) + 24) % 24);
+    const data = td._data, range = td._range;
+    for (let k = 1; k < path.length; k++) {
+      const ei = cheapestEdge(graph, path[k - 1]!, path[k]!);
+      out[k - 1] = ei >= 0 ? 1.0 + (data[ei * 24 + h]! / 255) * range : 1.0;
+    }
+  } else {
+    // Fallback: class-only congestion.
+    for (let k = 1; k < path.length; k++) {
+      const ei = cheapestEdge(graph, path[k - 1]!, path[k]!);
+      const cls = ei >= 0 ? classes[ei]! : 5;
+      out[k - 1] = congestionMultiplier(hour, cls);
+    }
   }
   return out;
 }

@@ -32,6 +32,7 @@ import {
   type PlaceKind,
 } from "./places.ts";
 import { addPlaceIcons } from "./place-icons.ts";
+import { loadTrafficData, type TrafficData } from "./trafficData.ts";
 
 // Light, label-rich CARTO Positron vector basemap: keyless, Google-ish tone.
 const BASEMAP_STYLE =
@@ -44,6 +45,17 @@ let graph: Graph;
 let router: Router;
 let model: TrafficModel;
 let map: maplibregl.Map;
+
+// Pre-filtered arterial edge data for the traffic overlay (class 0-2: motorway/trunk/primary).
+// Populated once after graph + traffic.bin load; null until then.
+let overlayFroms: Int32Array | null = null;
+let overlayEis: Int32Array | null = null;
+
+// Loaded traffic.bin data — kept here even when useGeneratedData=false so the
+// overlay can still render and the user can re-enable routing without a reload.
+let loadedTd: TrafficData | null = null;
+// When false, model.td is set to null so routing uses the synthetic fallback.
+let useGeneratedData = true;
 let originMarker: maplibregl.Marker | null = null;
 let destMarker: maplibregl.Marker | null = null;
 let mapReady = false;
@@ -60,6 +72,53 @@ let selected = 0;
 let mode: TravelMode = "drive";
 let hour = 8;
 let trafficOn = true;
+
+// ── Traffic overlay ───────────────────────────────────────────
+// Scans all edges once and stores the indices of arterials (class 0–2:
+// motorway, trunk, primary). ~100K edges in Jakarta — fast to iterate later.
+function initOverlayEdges() {
+  const { n, offsets, classes } = graph;
+  const froms: number[] = [], eis: number[] = [];
+  for (let i = 0; i < n; i++) {
+    for (let ei = offsets[i]!; ei < offsets[i + 1]!; ei++) {
+      if (classes[ei]! <= 2) { froms.push(i); eis.push(ei); }
+    }
+  }
+  overlayFroms = new Int32Array(froms);
+  overlayEis   = new Int32Array(eis);
+}
+
+// Build a GeoJSON FeatureCollection of arterial edges colored by congestion.
+// Called on initial load and on every slider-release (change event).
+function buildTrafficOverlay(h: number): object {
+  if (!loadedTd || !overlayFroms || !overlayEis) {
+    return { type: "FeatureCollection", features: [] };
+  }
+  const { lats, lons, targets } = graph;
+  const hh = Math.floor(((h % 24) + 24) % 24);
+  const data = loadedTd._data, range = loadedTd._range;
+  const count = overlayEis.length;
+  const features = new Array(count);
+  for (let k = 0; k < count; k++) {
+    const i = overlayFroms[k]!, ei = overlayEis[k]!, j = targets[ei]!;
+    const mult = 1.0 + (data[ei * 24 + hh]! / 255) * range;
+    features[k] = {
+      type: "Feature",
+      properties: { color: congestionColor(mult) },
+      geometry: {
+        type: "LineString",
+        coordinates: [[lons[i]!, lats[i]!], [lons[j]!, lats[j]!]],
+      },
+    };
+  }
+  return { type: "FeatureCollection", features };
+}
+
+function updateTrafficOverlay() {
+  if (!mapReady || !overlayFroms) return;
+  (map.getSource("traffic-overlay") as maplibregl.GeoJSONSource | undefined)
+    ?.setData(buildTrafficOverlay(hour) as never);
+}
 
 // GeoJSON builders
 function fullLine(path: Int32Array, props: Record<string, unknown>) {
@@ -84,7 +143,7 @@ function selectedFC() {
   const r = routes[selected];
   if (!r) return { type: "FeatureCollection" as const, features: [] };
   const colorByTraffic = mode === "drive" && trafficOn;
-  const segMult = segmentMultipliers(graph, r.path, hour, trafficOn, mode);
+  const segMult = segmentMultipliers(graph, model, r.path, hour, trafficOn, mode);
   const features = [];
   for (let k = 1; k < r.path.length; k++) {
     const a = r.path[k - 1]!,
@@ -191,6 +250,13 @@ function renderRoutesOnMap() {
   if (!mapReady) return;
   setData("alts", altsFC());
   setData("sel", selectedFC());
+  // Dim the overlay while a route is shown so the route line stands out.
+  // Restores automatically when the route is cleared.
+  map.setPaintProperty(
+    "traffic-overlay",
+    "line-opacity",
+    routes.length > 0 ? 0.12 : 0.72,
+  );
 }
 
 function fitToRoute() {
@@ -618,12 +684,33 @@ function wireControls() {
     $("hourval").textContent = formatClock(hour);
     scheduleDragRecompute();
   });
-  hourInput.addEventListener("change", recomputeFull); // settle on release w/ alternatives
+  hourInput.addEventListener("change", () => {
+    recomputeFull();
+    updateTrafficOverlay();
+  });
 
   const trafficInput = $("traffic") as HTMLInputElement;
   trafficInput.addEventListener("change", () => {
     trafficOn = trafficInput.checked;
     updateModeNote();
+    recomputeFull();
+  });
+
+  const trafficOverlayInput = $("showtraffic") as HTMLInputElement;
+  trafficOverlayInput.addEventListener("change", () => {
+    if (!mapReady) return;
+    map.setLayoutProperty(
+      "traffic-overlay",
+      "visibility",
+      trafficOverlayInput.checked ? "visible" : "none",
+    );
+  });
+
+  const useGenInput = $("usegenerateddata") as HTMLInputElement;
+  if (!loadedTd) useGenInput.disabled = true;
+  useGenInput.addEventListener("change", () => {
+    useGeneratedData = useGenInput.checked;
+    model.td = useGeneratedData ? loadedTd : null;
     recomputeFull();
   });
 
@@ -641,10 +728,31 @@ function wireControls() {
 }
 
 async function boot() {
-  setHint("Loading graph…");
-  graph = await loadGraph();
+  setHint("Loading graph + traffic data…");
+  const [graphResult, trafficBuf] = await Promise.all([
+    loadGraph(),
+    fetch("traffic.bin").then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null),
+  ]);
+  graph = graphResult;
   router = await initRouter(graph);
   model = precompute(graph);
+
+  if (trafficBuf) {
+    const td = loadTrafficData(trafficBuf);
+    if (td.e !== graph.e) {
+      throw new Error(
+        `traffic.bin e=${td.e} ≠ graph.e=${graph.e} — re-run pnpm gen:traffic`,
+      );
+    }
+    loadedTd = td;
+    model.td = td;
+    initOverlayEdges();
+  } else {
+    console.warn(
+      "traffic.bin not found — using synthetic fallback model. Run pnpm gen:traffic.",
+    );
+  }
+
   places = await loadPlaces();
   updateModeNote();
 
@@ -671,6 +779,24 @@ async function boot() {
     // layer that references them.
     addPlaceIcons(map);
     map.addSource("places", { type: "geojson", data: placesFC(places) });
+
+    // Traffic overlay: arterial roads (class 0-2) colored by congestion at the
+    // selected departure hour. Sits below route lines; updated on slider release.
+    map.addSource("traffic-overlay", {
+      type: "geojson",
+      data: buildTrafficOverlay(hour) as never,
+    });
+    map.addLayer({
+      id: "traffic-overlay",
+      type: "line",
+      source: "traffic-overlay",
+      layout: { "line-cap": "butt", "line-join": "round" },
+      paint: {
+        "line-color": ["get", "color"],
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1.5, 14, 3.5],
+        "line-opacity": 0.72,
+      },
+    });
 
     map.addSource("alts", {
       type: "geojson",
@@ -797,7 +923,7 @@ async function boot() {
     applyZoomThinning(true);
     renderRoutesOnMap();
     setHint(
-      `${graph.n.toLocaleString()} nodes loaded. Search or click the map to set the origin.`,
+      `${graph.n.toLocaleString()} nodes loaded${loadedTd ? " · traffic data active" : " · no traffic.bin (run pnpm gen:traffic)"}. Search or click the map to set the origin.`,
     );
   });
 
