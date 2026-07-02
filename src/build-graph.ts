@@ -3,6 +3,7 @@ import { fileURLToPath } from 'url';
 import { parsePbf } from './lib/parser.ts';
 import { haversine } from './lib/geo.ts';
 import { roadClass } from './lib/roadclass.ts';
+import type { OsmRestriction, OsmWay } from './lib/parser.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PBF_PATH = path.join(__dirname, '../data/java-260607.osm.pbf');
@@ -10,17 +11,20 @@ const JAKARTA_BBOX = { minLat: -6.40, maxLat: -6.05, minLng: 106.65, maxLng: 107
 
 export type Edge = { to: number; dist: number; cls: number; name: string };
 export type AdjList = Map<number, Edge[]>;
+export type { OsmRestriction };
 
 export type GraphResult = {
   adj: AdjList;
   nodes: Map<number, import('./lib/parser.ts').NodeCoord>;
   places: import('./lib/parser.ts').OsmPlace[];
+  rawRestrictions: OsmRestriction[];
+  ways: OsmWay[];
 };
 
 export async function buildGraph(): Promise<GraphResult> {
   console.log('Parsing PBF...');
-  const { nodes, ways, places } = await parsePbf(PBF_PATH, JAKARTA_BBOX);
-  console.log(`  ${nodes.size.toLocaleString()} nodes, ${ways.length.toLocaleString()} ways, ${places.length.toLocaleString()} places`);
+  const { nodes, ways, places, restrictions } = await parsePbf(PBF_PATH, JAKARTA_BBOX);
+  console.log(`  ${nodes.size.toLocaleString()} nodes, ${ways.length.toLocaleString()} ways, ${places.length.toLocaleString()} places, ${restrictions.length.toLocaleString()} restriction relations`);
 
   console.log('Building adjacency list...');
   const adj: AdjList = new Map();
@@ -68,5 +72,5 @@ export async function buildGraph(): Promise<GraphResult> {
   console.log(`  Avg edges/node:    ${(edgeCount / adj.size).toFixed(2)}`);
   console.log(`  Skipped segments:  ${skipped.toLocaleString()} (node outside bbox)`);
 
-  return { adj, nodes, places };
+  return { adj, nodes, places, rawRestrictions: restrictions, ways };
 }

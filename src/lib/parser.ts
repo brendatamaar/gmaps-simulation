@@ -16,6 +16,13 @@ export type Bbox = {
   minLng: number;
   maxLng: number;
 };
+// turn_restriction relation with a node via (way-via is skipped)
+export type OsmRestriction = {
+  type: 'no' | 'only'; // no_* = forbidden; only_* = all other turns forbidden
+  fromWayId: number;
+  viaNodeId: number;
+  toWayId: number;
+};
 
 export type PlaceKind =
   | "airport"
@@ -205,10 +212,12 @@ export async function parsePbf(
   nodes: Map<number, NodeCoord>;
   ways: OsmWay[];
   places: OsmPlace[];
+  restrictions: OsmRestriction[];
 }> {
   const nodes = new Map<number, NodeCoord>();
   const ways: OsmWay[] = [];
   const places: OsmPlace[] = [];
+  const restrictions: OsmRestriction[] = [];
 
   const inBox = (lat: number, lon: number) =>
     lat >= bbox.minLat &&
@@ -232,10 +241,36 @@ export async function parsePbf(
               places.push({ name: tags.name, lat, lon, kind, ...(addr ? { addr } : {}) });
             }
           }
+        } else if (item.type === "relation") {
+          const tags = item.tags;
+          if (!tags || tags['type'] !== 'restriction') continue;
+          const restriction =
+            tags['restriction'] ||
+            tags['restriction:motorcar'] ||
+            tags['restriction:motor_vehicle'];
+          if (!restriction) continue;
+          const isNo = restriction.startsWith('no_');
+          const isOnly = restriction.startsWith('only_');
+          if (!isNo && !isOnly) continue;
+          let fromWayId = -1, viaNodeId = -1, toWayId = -1;
+          for (const member of (item.members ?? [])) {
+            const memId = member.ref ?? member.id;
+            if (member.role === 'from' && member.type === 'way') fromWayId = memId;
+            else if (member.role === 'via' && member.type === 'node') viaNodeId = memId;
+            else if (member.role === 'to' && member.type === 'way') toWayId = memId;
+          }
+          // Only handle node-via restrictions; skip way-via (complex multi-edge turns)
+          if (fromWayId < 0 || viaNodeId < 0 || toWayId < 0) continue;
+          if (!nodes.has(viaNodeId)) continue; // via must be inside bbox
+          restrictions.push({ type: isOnly ? 'only' : 'no', fromWayId, viaNodeId, toWayId });
         } else if (item.type === "way") {
           const tags = item.tags;
           if (!tags) continue;
           if (tags.highway && HIGHWAY_KEEP.has(tags.highway)) {
+            // Skip ways with explicit motor-vehicle prohibition
+            const access = tags['access'];
+            const motorVehicle = tags['motor_vehicle'] || tags['motorcar'];
+            if (access === 'no' || motorVehicle === 'no') continue;
             ways.push({ id: item.id, refs: item.refs, tags });
           } else if (tags.name) {
             // Ways (PBF orders nodes before ways, so refs are resolvable here).
@@ -290,5 +325,6 @@ export async function parsePbf(
     nodes,
     ways: ways.filter((w) => w.refs.some((id) => nodes.has(id))),
     places: deduped,
+    restrictions,
   };
 }
