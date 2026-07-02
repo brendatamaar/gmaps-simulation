@@ -9,6 +9,8 @@
     "build:wasm": "asc assembly/index.ts --target release --outFile build/release.wasm --optimize --runtime stub",
     "validate:as": "node --import ./node_modules/tsx/dist/esm/index.cjs src/validate-as.ts",
     "export:graph": "node --import ./node_modules/tsx/dist/esm/index.cjs src/export-graph.ts",
+    "export:ch": "node --import ./node_modules/tsx/dist/esm/index.cjs src/export-ch.ts",
+    "export:alt": "node --import ./node_modules/tsx/dist/esm/index.cjs src/export-alt.ts",
     "test:ch": "node --import ./node_modules/tsx/dist/esm/index.cjs src/test-ch.ts",
     "ch:city": "node --import ./node_modules/tsx/dist/esm/index.cjs src/bench-ch.ts",
     "gen:traffic": "node --import ./node_modules/tsx/dist/esm/index.cjs src/gen-traffic.ts",
