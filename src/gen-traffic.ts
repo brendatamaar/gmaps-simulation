@@ -42,23 +42,12 @@ import fs from 'fs';
 import { readFile } from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { ASSUMPTIONS as A } from './traffic-assumptions.ts';
+import { ASSUMPTIONS as A } from './lib/traffic-constants.ts';
+import { haversine } from './lib/geo.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUB = path.join(__dirname, '../web/public');
-
-// ── Helpers ──────────────────────────────────────────────────
-
-const EARTH_R = 6_371_000; // metres
-function haversine(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return EARTH_R * 2 * Math.asin(Math.sqrt(a));
-}
+const PUB     = path.join(__dirname, '../web/public');   // read-only: graph.bin
+const GEN_OUT = path.join(__dirname, '../gen-out');      // write: analytics + traffic bins
 
 // Deterministic per-(edge, hour) noise in [−noiseAmplitude, +noiseAmplitude].
 // Stateless multiplicative hash — same inputs always produce the same output.
@@ -254,11 +243,15 @@ const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
 process.stdout.write(`\r  Done in ${elapsed}s.                     \n`);
 
 // ── Write outputs ─────────────────────────────────────────────
+// Both files go to gen-out/ (gitignored).
+// traffic-full.bin: analytics only — never shipped to the browser.
+// traffic.bin:      offline verification only — browser now generates
+//                   congestion multipliers in-browser via BPR model.
 
-fs.mkdirSync(PUB, { recursive: true });
+fs.mkdirSync(GEN_OUT, { recursive: true });
 
-const fullPath  = path.join(PUB, 'traffic-full.bin');
-const routePath = path.join(PUB, 'traffic.bin');
+const fullPath  = path.join(GEN_OUT, 'traffic-full.bin');
+const routePath = path.join(GEN_OUT, 'traffic.bin');
 fs.writeFileSync(fullPath,  Buffer.from(fullAb));
 fs.writeFileSync(routePath, Buffer.from(routeAb));
 
