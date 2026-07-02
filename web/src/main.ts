@@ -3,7 +3,9 @@ import "maplibre-gl/dist/maplibre-gl.css";
 
 import { loadGraph, nearestNode, type Graph } from "./graph.ts";
 import { initRouter, type Router } from "./router.ts";
-import { computeRoutes, type RouteOption } from "./routing.ts";
+import { computeRoutes, computeRoutesBidir, type RouteOption } from "./routing.ts";
+import { buildRevCSR, type RevCSR } from "./bidir-router.ts";
+import { loadAlt, type AltData } from "./alt.ts";
 import {
   buildDirections,
   primaryRoad,
@@ -19,7 +21,9 @@ import {
   arrivalClock,
   segmentMultipliers,
   congestionColor,
+  edgeCongestionMult,
   pathDistanceMeters,
+  modeHScale,
   type TrafficModel,
   type TravelMode,
 } from "./traffic.ts";
@@ -32,7 +36,7 @@ import {
   type PlaceKind,
 } from "./places.ts";
 import { addPlaceIcons } from "./place-icons.ts";
-import { loadTrafficData, type TrafficData } from "./trafficData.ts";
+import { loadCH, CHRouter, type CHData } from "./ch.ts";
 
 // Light, label-rich CARTO Positron vector basemap: keyless, Google-ish tone.
 const BASEMAP_STYLE =
@@ -45,17 +49,19 @@ let graph: Graph;
 let router: Router;
 let model: TrafficModel;
 let map: maplibregl.Map;
+let chData: CHData | null = null;
+let chRouter: CHRouter | null = null;
+let altData: AltData | null = null;
+let rev: RevCSR | null = null;
+// Last query stats for the mode note display.
+let lastCH: { settled: number; queryMs: number } | null = null;
+let lastAstar: { settled: number; queryMs: number } | null = null;
+let lastBidir: { settled: number; queryMs: number } | null = null;
 
 // Pre-filtered arterial edge data for the traffic overlay (class 0-2: motorway/trunk/primary).
-// Populated once after graph + traffic.bin load; null until then.
+// Populated once after the graph loads.
 let overlayFroms: Int32Array | null = null;
 let overlayEis: Int32Array | null = null;
-
-// Loaded traffic.bin data — kept here even when useGeneratedData=false so the
-// overlay can still render and the user can re-enable routing without a reload.
-let loadedTd: TrafficData | null = null;
-// When false, model.td is set to null so routing uses the synthetic fallback.
-let useGeneratedData = true;
 let originMarker: maplibregl.Marker | null = null;
 let destMarker: maplibregl.Marker | null = null;
 let mapReady = false;
@@ -90,18 +96,18 @@ function initOverlayEdges() {
 
 // Build a GeoJSON FeatureCollection of arterial edges colored by congestion.
 // Called on initial load and on every slider-release (change event).
+// Uses edgeCongestionMult() which falls back to the static model until the
+// Web Worker delivers cbdFactor/edgeDot.
 function buildTrafficOverlay(h: number): object {
-  if (!loadedTd || !overlayFroms || !overlayEis) {
+  if (!overlayFroms || !overlayEis) {
     return { type: "FeatureCollection", features: [] };
   }
-  const { lats, lons, targets } = graph;
-  const hh = Math.floor(((h % 24) + 24) % 24);
-  const data = loadedTd._data, range = loadedTd._range;
+  const { lats, lons, targets, classes } = graph;
   const count = overlayEis.length;
   const features = new Array(count);
   for (let k = 0; k < count; k++) {
     const i = overlayFroms[k]!, ei = overlayEis[k]!, j = targets[ei]!;
-    const mult = 1.0 + (data[ei * 24 + hh]! / 255) * range;
+    const mult = edgeCongestionMult(model, ei, classes[ei]!, h);
     features[k] = {
       type: "Feature",
       properties: { color: congestionColor(mult) },
@@ -223,7 +229,7 @@ function renderCards() {
     card.innerHTML =
       `<div class="eta" style="color:${i === 0 ? "#188038" : "#5f6368"}">${formatEta(r.etaSec)}</div>` +
       `<div class="meta"><b>${(r.distanceM / 1000).toFixed(1)} km</b>` +
-      `${via ? ` · via ${via}` : ""}<br>arrive ${arrivalClock(hour, r.etaSec)}` +
+      `${via ? ` · via ${escHtml(via)}` : ""}<br>arrive ${arrivalClock(hour, r.etaSec)}` +
       `${i === 0 && routes.length > 1 ? " · fastest" : ""}</div>`;
     card.addEventListener("click", () => selectRoute(i));
     host.appendChild(card);
@@ -240,7 +246,7 @@ function renderSteps() {
     row.className = "step";
     row.innerHTML =
       `<div class="g">${maneuverGlyph(st.type)}</div>` +
-      `<div class="t">${st.text}</div>` +
+      `<div class="t">${escHtml(st.text)}</div>` +
       `<div class="d">${st.distanceM ? formatDistance(st.distanceM) : ""}</div>`;
     host.appendChild(row);
   }
@@ -305,12 +311,27 @@ function setHint(t: string) {
 }
 
 function updateModeNote() {
-  $("modenote").textContent =
-    mode !== "drive"
-      ? `${mode === "walk" ? "Walking" : "Cycling"} ignores traffic — a flat speed on every road.`
-      : trafficOn
-        ? "A* over live time-of-day weights (the dynamic path). CH would be the static fast-path: precomputed, microsecond queries, but blind to traffic."
-        : "Free-flow weights — the static answer a CH preprocess would bake in.";
+  let text: string;
+  if (mode !== "drive") {
+    text = `${mode === "walk" ? "Walking" : "Cycling"} ignores traffic — a flat speed on every road.`;
+  } else if (trafficOn) {
+    text = "Bidir A* + ALT with live time-of-day traffic weights.";
+    if (lastBidir) text += ` Bidir+ALT: ${lastBidir.settled.toLocaleString()} settled, ${lastBidir.queryMs.toFixed(1)} ms.`;
+    else if (lastAstar) text += ` A*: ${lastAstar.settled.toLocaleString()} settled, ${lastAstar.queryMs.toFixed(1)} ms.`;
+    text += altData ? "" : " ALT loading…";
+    text += " CH disabled (stale under live traffic).";
+  } else {
+    // drive + trafficOff
+    if (!chData) {
+      text = "CH loading… A* running free-flow in the meantime.";
+    } else if (lastCH) {
+      text = `CH: ${lastCH.settled.toLocaleString()} settled, ${lastCH.queryMs.toFixed(2)} ms`;
+      if (lastAstar) text += ` · A* ref: ${lastAstar.settled.toLocaleString()} settled, ${lastAstar.queryMs.toFixed(1)} ms`;
+    } else {
+      text = "Free-flow CH precomputed graph. Search or click the map.";
+    }
+  }
+  $("modenote").textContent = text;
 }
 
 // Full search incl. alternatives. Used on commit events (new endpoint, mode,
@@ -321,44 +342,110 @@ function recomputeFull() {
     renderAll();
     return;
   }
-  routes = computeRoutes(
-    graph,
-    router,
-    model,
-    startIdx,
-    endIdx,
-    hour,
-    trafficOn,
-    mode,
-  );
+
+  if (startIdx === endIdx) {
+    routes = [];
+    setHint("Origin and destination are the same — choose different points.");
+    renderAll();
+    return;
+  }
+
+  const useCH = mode === "drive" && !trafficOn && chRouter !== null;
+
+  if (useCH) {
+    const cr = chRouter!.query(startIdx, endIdx);
+    if (cr) {
+      const path = new Int32Array(cr.path);
+      routes = [{
+        path,
+        etaSec: etaSeconds(cr.dist),
+        distanceM: pathDistanceMeters(graph, path),
+        nodesVisited: cr.settled,
+        queryMs: cr.queryMs,
+      }];
+      lastCH = { settled: cr.settled, queryMs: cr.queryMs };
+      // Run A* once (free-flow) for benchmark comparison.
+      fillWeights(router.weights, graph, model, hour, false, "drive");
+      const ar = router.route(startIdx, endIdx);
+      lastAstar = ar ? { settled: ar.nodesVisited, queryMs: ar.queryMs } : null;
+    } else {
+      routes = [];
+      lastCH = null;
+      lastAstar = null;
+    }
+  } else if (mode === "drive" && trafficOn && rev !== null) {
+    lastCH = null;
+    routes = computeRoutesBidir(graph, rev, router.weights, altData, router.restrictions, model, startIdx, endIdx, hour, trafficOn, mode);
+    const r = routes[0];
+    lastBidir = r ? { settled: r.nodesVisited, queryMs: r.queryMs } : null;
+    lastAstar = null;
+  } else {
+    lastCH = null;
+    lastBidir = null;
+    routes = computeRoutes(graph, router, model, startIdx, endIdx, hour, trafficOn, mode);
+    const r = routes[0];
+    lastAstar = r ? { settled: r.nodesVisited, queryMs: r.queryMs } : null;
+  }
+
   selected = 0;
   setHint(
     routes.length
       ? `${routes.length} route${routes.length > 1 ? "s" : ""} found.`
       : "No route found — try other points.",
   );
+  updateModeNote();
   renderAll();
   if (routes.length > 0) fitToRoute();
 }
 
 // Single fastest route only, cheap enough to run live while dragging the slider.
-// fillWeights leaves the true live weights in the buffer, so r.cost is the true
-// cost and ETA is honest without a separate pathWeight pass.
 function recomputePrimary() {
   if (startIdx === null || endIdx === null) return;
-  fillWeights(router.weights, graph, model, hour, trafficOn, mode);
-  const r = router.route(startIdx, endIdx);
-  routes = r
-    ? [
-        {
+
+  const useCH = mode === "drive" && !trafficOn && chRouter !== null;
+
+  if (useCH) {
+    const cr = chRouter!.query(startIdx, endIdx);
+    if (cr) {
+      const path = new Int32Array(cr.path);
+      routes = [{
+        path,
+        etaSec: etaSeconds(cr.dist),
+        distanceM: pathDistanceMeters(graph, path),
+        nodesVisited: cr.settled,
+        queryMs: cr.queryMs,
+      }];
+      lastCH = { settled: cr.settled, queryMs: cr.queryMs };
+    } else {
+      routes = [];
+    }
+  } else if (mode === "drive" && trafficOn && rev !== null) {
+    // Run all 3 penalty iterations (same as recomputeFull) so the fastest route
+    // found during drag always matches what release shows. Using 2 iterations was
+    // insufficient: the optimal route can require iter 3 to surface when bidirRoute
+    // raw-weight ordering and pathWeight re-score ordering disagree.
+    const primary = computeRoutesBidir(
+      graph, rev, router.weights, altData, router.restrictions, model,
+      startIdx, endIdx, hour, trafficOn, mode,
+    );
+    routes = primary.length > 0 ? [primary[0]!] : [];
+    const r0 = routes[0];
+    if (r0) lastBidir = { settled: r0.nodesVisited, queryMs: r0.queryMs };
+  } else {
+    fillWeights(router.weights, graph, model, hour, trafficOn, mode);
+    const r = router.route(startIdx, endIdx, modeHScale(mode));
+    routes = r
+      ? [{
           path: r.path,
           etaSec: etaSeconds(r.cost),
           distanceM: pathDistanceMeters(graph, r.path),
           nodesVisited: r.nodesVisited,
           queryMs: r.queryMs,
-        },
-      ]
-    : [];
+        }]
+      : [];
+    if (r) lastAstar = { settled: r.nodesVisited, queryMs: r.queryMs };
+  }
+
   selected = 0;
   renderAll();
 }
@@ -469,11 +556,11 @@ function onMapClick(e: maplibregl.MapMouseEvent) {
     const pIdx = placeHit[0]?.properties?.idx;
     if (typeof pIdx === "number" && places[pIdx]) {
       const p = places[pIdx];
-      setEndpoint(nearestNode(graph, p.lat, p.lon), p.name);
+      setEndpoint(nearestNode(graph, p.lat, p.lon, mode === 'drive' ? 3 : 7), p.name);
       return;
     }
   }
-  setEndpoint(nearestNode(graph, e.lngLat.lat, e.lngLat.lng));
+  setEndpoint(nearestNode(graph, e.lngLat.lat, e.lngLat.lng, mode === 'drive' ? 3 : 7));
 }
 
 // Search
@@ -563,7 +650,7 @@ function wireSearch(inputId: "origin" | "dest", suggId: string) {
     if (!p) return;
     input.value = p.name;
     close();
-    setEndpointDirect(inputId, nearestNode(graph, p.lat, p.lon), p.name);
+    setEndpointDirect(inputId, nearestNode(graph, p.lat, p.lon, mode === 'drive' ? 3 : 7), p.name);
   }
 
   function open(results: Place[], q: string) {
@@ -706,13 +793,6 @@ function wireControls() {
     );
   });
 
-  const useGenInput = $("usegenerateddata") as HTMLInputElement;
-  if (!loadedTd) useGenInput.disabled = true;
-  useGenInput.addEventListener("change", () => {
-    useGeneratedData = useGenInput.checked;
-    model.td = useGeneratedData ? loadedTd : null;
-    recomputeFull();
-  });
 
   const placesInput = $("showplaces") as HTMLInputElement;
   placesInput.addEventListener("change", () => {
@@ -728,30 +808,62 @@ function wireControls() {
 }
 
 async function boot() {
-  setHint("Loading graph + traffic data…");
-  const [graphResult, trafficBuf] = await Promise.all([
-    loadGraph(),
-    fetch("traffic.bin").then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null),
-  ]);
-  graph = graphResult;
+  setHint("Loading graph…");
+  graph = await loadGraph();
   router = await initRouter(graph);
   model = precompute(graph);
+  rev = buildRevCSR(graph);
+  initOverlayEdges();
 
-  if (trafficBuf) {
-    const td = loadTrafficData(trafficBuf);
-    if (td.e !== graph.e) {
-      throw new Error(
-        `traffic.bin e=${td.e} ≠ graph.e=${graph.e} — re-run pnpm gen:traffic`,
-      );
+  loadAlt().then(a => {
+    if (!a) return;
+    altData = a;
+    console.log(`[boot] ALT ready: ${a.L} landmarks`);
+    updateModeNote();
+    if (startIdx !== null && endIdx !== null) recomputeFull();
+  });
+
+  // Load CH precomputed graph in the background — once ready, drive+trafficOff
+  // queries switch from A* to CH automatically.
+  loadCH().then(ch => {
+    if (!ch) return;
+    chData   = ch;
+    chRouter = new CHRouter(ch);
+    console.log(`[boot] CH ready: ${ch.n.toLocaleString()} nodes`);
+    updateModeNote();
+    if (startIdx !== null && endIdx !== null && mode === "drive" && !trafficOn) {
+      recomputeFull();
     }
-    loadedTd = td;
-    model.td = td;
-    initOverlayEdges();
-  } else {
-    console.warn(
-      "traffic.bin not found — using synthetic fallback model. Run pnpm gen:traffic.",
+  });
+
+  // Start the Web Worker that computes per-edge cbdFactor and edgeDot.
+  // The worker runs in parallel with the rest of init; model updates when it
+  // posts back, then routes and overlay are re-rendered.
+  const worker = new Worker(
+    new URL("./traffic-gen.worker.ts", import.meta.url),
+    { type: "module" },
+  );
+  worker.postMessage({
+    lats: graph.lats,
+    lons: graph.lons,
+    offsets: graph.offsets,
+    targets: graph.targets,
+    n: graph.n,
+    e: graph.e,
+  });
+  worker.onmessage = (evt: MessageEvent<{ cbdFactor: Float64Array; edgeDot: Float64Array }>) => {
+    const t0 = performance.now();
+    model.cbdFactor = evt.data.cbdFactor;
+    model.edgeDot   = evt.data.edgeDot;
+    worker.terminate();
+    const ms = (performance.now() - t0).toFixed(0);
+    console.log(`[boot] BPR model ready (worker→main transfer+assign: ${ms} ms)`);
+    updateTrafficOverlay();
+    if (startIdx !== null && endIdx !== null) recomputeFull();
+    setHint(
+      `${graph.n.toLocaleString()} nodes · traffic model ready (BPR in-browser). Search or click the map.`,
     );
-  }
+  };
 
   places = await loadPlaces();
   updateModeNote();
@@ -923,7 +1035,7 @@ async function boot() {
     applyZoomThinning(true);
     renderRoutesOnMap();
     setHint(
-      `${graph.n.toLocaleString()} nodes loaded${loadedTd ? " · traffic data active" : " · no traffic.bin (run pnpm gen:traffic)"}. Search or click the map to set the origin.`,
+      `${graph.n.toLocaleString()} nodes loaded · computing traffic model… Search or click the map to set the origin.`,
     );
   });
 

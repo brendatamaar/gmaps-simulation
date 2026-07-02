@@ -7,6 +7,7 @@ import type { Graph } from './graph.ts';
 type WasmExports = {
   memory: WebAssembly.Memory;
   initGraph(n: number, e: number): void;
+  initRestrictions(viaCount: number, pairCount: number): void;
   getOffsetsPtr(): number;
   getTargetsPtr(): number;
   getDistPtr(): number;
@@ -16,8 +17,42 @@ type WasmExports = {
   getPathLen(): number;
   getDistMeters(): number;
   getNodesVisited(): number;
-  astar(startIdx: number, endIdx: number): number;
+  getRViaPtr(): number;
+  getROffPtr(): number;
+  getRPairPtr(): number;
+  astar(startIdx: number, endIdx: number, hScale: number): number;
 };
+
+const RESTRICT_MAGIC = 0x52455354; // "REST"
+
+// Parsed restriction data ready for upload into WASM memory and for the JS
+// bidirectional A* (which cannot use the WASM restriction tables directly).
+export type Restrictions = {
+  viaCount: number;
+  pairCount: number;
+  viaNodes: Int32Array;  // sorted via node indices
+  pairOffs: Int32Array;  // start offset in pairs section per via node
+  pairs:    Int32Array;  // interleaved (from, to) pairs
+};
+
+async function loadRestrictions(): Promise<Restrictions> {
+  const res = await fetch('restrictions.bin');
+  if (!res.ok) return { viaCount: 0, pairCount: 0, viaNodes: new Int32Array(0), pairOffs: new Int32Array(0), pairs: new Int32Array(0) };
+  const ab = await res.arrayBuffer();
+  const hdr = new Uint32Array(ab, 0, 4);
+  if (hdr[0] !== RESTRICT_MAGIC) return { viaCount: 0, pairCount: 0, viaNodes: new Int32Array(0), pairOffs: new Int32Array(0), pairs: new Int32Array(0) };
+  const viaCount  = hdr[2]!;
+  const pairCount = hdr[3]!;
+  const viaSection  = new Int32Array(ab, 16, viaCount * 2);
+  const pairSection = new Int32Array(ab, 16 + viaCount * 8, pairCount * 2);
+  const viaNodes = new Int32Array(viaCount);
+  const pairOffs = new Int32Array(viaCount);
+  for (let i = 0; i < viaCount; i++) {
+    viaNodes[i] = viaSection[i * 2]!;
+    pairOffs[i] = viaSection[i * 2 + 1]!;
+  }
+  return { viaCount, pairCount, viaNodes, pairOffs, pairs: pairSection };
+}
 
 export type RouteResult = {
   path: Int32Array;      // node indices, start → end (copied out of WASM memory)
@@ -30,7 +65,8 @@ export type Router = {
   // Live view over the WASM weight buffer the A* reads. Write metres-equivalent
   // weights here (see traffic.fillWeights) before calling route().
   weights: Float64Array;
-  route(startIdx: number, endIdx: number): RouteResult | null;
+  restrictions: Restrictions;
+  route(startIdx: number, endIdx: number, hScale?: number): RouteResult | null;
 };
 
 export async function initRouter(graph: Graph): Promise<Router> {
@@ -45,29 +81,38 @@ export async function initRouter(graph: Graph): Promise<Router> {
     Math,
   } as unknown as WebAssembly.Imports;
 
-  const res = await fetch('release.wasm');
-  const { instance } = await WebAssembly.instantiate(await res.arrayBuffer(), importObject);
+  const [wasmRes, restrictions] = await Promise.all([
+    fetch('release.wasm'),
+    loadRestrictions(),
+  ]);
+  const { instance } = await WebAssembly.instantiate(await wasmRes.arrayBuffer(), importObject);
   const w = instance.exports as unknown as WasmExports;
 
-  // Allocate all WASM buffers, then upload the CSR arrays. initGraph is the only
-  // call that grows memory, so the buffer is stable for every subsequent query.
+  // initGraph and initRestrictions grow WASM memory; all subsequent views are stable.
   w.initGraph(graph.n, graph.e);
+  w.initRestrictions(restrictions.viaCount, restrictions.pairCount);
   const buf = w.memory.buffer;
   new Int32Array(buf, w.getOffsetsPtr(), graph.n + 1).set(graph.offsets);
   new Int32Array(buf, w.getTargetsPtr(), graph.e).set(graph.targets);
   new Float64Array(buf, w.getLatsPtr(), graph.n).set(graph.lats);
   new Float64Array(buf, w.getLonsPtr(), graph.n).set(graph.lons);
+  if (restrictions.viaCount > 0) {
+    new Int32Array(buf, w.getRViaPtr(),  restrictions.viaCount).set(restrictions.viaNodes);
+    new Int32Array(buf, w.getROffPtr(),  restrictions.viaCount).set(restrictions.pairOffs);
+    new Int32Array(buf, w.getRPairPtr(), restrictions.pairCount * 2).set(restrictions.pairs);
+  }
 
-  // initGraph is the only call that grows memory, so this view stays valid for
-  // the lifetime of the page. The caller fills it with live weights per query.
+  // Both init calls have run; buf is stable for the lifetime of the page.
+  // The caller fills weights with live traffic values per query.
   const weights = new Float64Array(buf, w.getDistPtr(), graph.e);
   weights.set(graph.distances); // sensible default until the traffic model loads
 
   return {
     weights,
-    route(startIdx, endIdx) {
+    restrictions,
+    route(startIdx, endIdx, hScale = 1.0) {
       const t0 = performance.now();
-      const rc = w.astar(startIdx, endIdx);
+      const rc = w.astar(startIdx, endIdx, hScale);
       const queryMs = performance.now() - t0;
       if (rc !== 0) return null;
       const len = w.getPathLen();
