@@ -23,7 +23,8 @@ import { ASSUMPTIONS as A } from './traffic-assumptions.ts';
 import { loadTrafficFull, getVolumeFull, getSpeedFull } from '../web/src/trafficData.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUB = path.join(__dirname, '../web/public');
+const PUB     = path.join(__dirname, '../web/public');  // graph.bin, names.json
+const GEN_OUT = path.join(__dirname, '../gen-out');     // traffic-full.bin, corridor CSV
 
 // ── Load graph.bin ────────────────────────────────────────────
 
@@ -51,7 +52,7 @@ void n; // used in offset computation above
 
 // ── Load traffic-full.bin ─────────────────────────────────────
 
-const rawF = await readFile(path.join(PUB, 'traffic-full.bin')).catch(() => {
+const rawF = await readFile(path.join(GEN_OUT, 'traffic-full.bin')).catch(() => {
   throw new Error('traffic-full.bin not found — run pnpm gen:traffic first');
 });
 const fbuf = rawF.buffer.slice(rawF.byteOffset, rawF.byteOffset + rawF.byteLength);
@@ -174,7 +175,7 @@ for (const corridor of CORRIDORS) {
 
 // ── Write CSV ─────────────────────────────────────────────────
 
-const csvPath = path.join(PUB, 'corridor-traffic.csv');
+const csvPath = path.join(GEN_OUT, 'corridor-traffic.csv');
 fs.writeFileSync(csvPath, csvRows.join('\n') + '\n', 'utf8');
 console.log(`\nWrote ${csvPath}`);
 console.log(`  ${csvRows.length - 1} data rows  (${CORRIDORS.length} corridors × 24 hours)`);

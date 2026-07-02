@@ -21,11 +21,13 @@ import { fileURLToPath } from 'url';
 import {
   fillWeights, etaSeconds, type TrafficModel,
 } from '../web/src/traffic.ts';
-import { loadTrafficData } from '../web/src/trafficData.ts';
+import { ASSUMPTIONS as A } from './lib/traffic-constants.ts';
+import { haversine } from './lib/geo.ts';
 import type { Graph } from '../web/src/graph.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUB = path.join(__dirname, '../web/public');
+const PUB     = path.join(__dirname, '../web/public');  // graph.bin, release.wasm
+const GEN_OUT = path.join(__dirname, '../gen-out');     // traffic.bin
 
 // ── Load graph.bin ────────────────────────────────────────────
 
@@ -110,21 +112,44 @@ weights.set(distances); // sensible init until fillWeights overwrites it
 
 console.log('WASM A* initialised');
 
-// ── Load traffic.bin ──────────────────────────────────────────
+// ── Build BPR model (same computation as traffic-gen.worker.ts) ───────────────
+// Compute per-edge cbdFactor and edgeDot from graph geometry.
+// This mirrors the in-browser Web Worker so the verify script tests the same
+// model the browser uses, without requiring traffic.bin.
 
-const rawT = await readFile(path.join(PUB, 'traffic.bin')).catch(() => {
-  throw new Error('traffic.bin not found — run pnpm gen:traffic first');
-});
-const tbuf = rawT.buffer.slice(rawT.byteOffset, rawT.byteOffset + rawT.byteLength);
-const td = loadTrafficData(tbuf);
-if (td.e !== e) {
-  throw new Error(`traffic.bin e=${td.e} ≠ graph.e=${e} — re-run pnpm gen:traffic`);
+void GEN_OUT; // GEN_OUT available if other verify scripts need it; unused here
+
+console.log('Computing BPR per-edge factors (cbdFactor, edgeDot)…');
+const t0bpr = performance.now();
+const cbdFactor = new Float64Array(e);
+const edgeDot   = new Float64Array(e);
+for (let i = 0; i < n; i++) {
+  const srcLat = nodeLats[i]!;
+  const srcLon = nodeLons[i]!;
+  for (let ei = offsets[i]!; ei < offsets[i + 1]!; ei++) {
+    const j = targets[ei]!;
+    const midLat = j >= 0 ? (srcLat + nodeLats[j]!) / 2 : srcLat;
+    const midLon = j >= 0 ? (srcLon + nodeLons[j]!) / 2 : srcLon;
+    const cbdDist = haversine(midLat, midLon, A.cbdLat, A.cbdLon);
+    cbdFactor[ei] = 1 + A.cbdDemandBoost * Math.exp(-((cbdDist / A.cbdScaleM) ** 2));
+    let dot = 0;
+    if (j >= 0) {
+      const cosLat = Math.cos((midLat * Math.PI) / 180);
+      const ex = (nodeLons[j]! - srcLon) * cosLat;
+      const ey = nodeLats[j]! - srcLat;
+      const cx = (A.cbdLon - midLon) * cosLat;
+      const cy = A.cbdLat - midLat;
+      const eMag = Math.sqrt(ex * ex + ey * ey);
+      const cMag = Math.sqrt(cx * cx + cy * cy);
+      if (eMag > 0 && cMag > 0) dot = (ex * cx + ey * cy) / (eMag * cMag);
+    }
+    edgeDot[ei] = dot;
+  }
 }
+const elapsedBpr = ((performance.now() - t0bpr) / 1000).toFixed(2);
+console.log(`  Done in ${elapsedBpr}s.\n`);
 
-// Skip precompute() to save ~5 s: staticMult is dormant when td is loaded.
-// Both the data-driven path in fillWeights and all assertions below use td.
-const model: TrafficModel = { staticMult: new Float64Array(e).fill(1), td };
-console.log(`traffic.bin v${td.version}: ${td.e.toLocaleString()} edges × 24 h\n`);
+const model: TrafficModel = { staticMult: new Float64Array(e).fill(1), cbdFactor, edgeDot };
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -232,7 +257,7 @@ ok(
 );
 
 // 3. Traffic-off at h=8 restores near-overnight ETA (toggle works).
-// At h=3 the calibrated model gives near-free-flow (avg mult ≈ 1.01),
+// At h=3 the BPR model gives near-free-flow (demand ≈ 4% of peak → low mult),
 // and trafficOff gives exactly free-flow (mult = 1). Allow 5%.
 const toggleOk = results.filter(r => {
   const ratio = r.eta8off / r.eta3;
@@ -265,6 +290,6 @@ console.log();
 if (failCount === 0) {
   console.log(`All ${passCount} assertions passed. Traffic routing is working correctly.`);
 } else {
-  console.log(`${failCount} assertion(s) FAILED. Check traffic.bin or assertions above.`);
+  console.log(`${failCount} assertion(s) FAILED. Check BPR model or assertions above.`);
   process.exitCode = 1;
 }

@@ -23,7 +23,8 @@ import {
 } from '../web/src/trafficData.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUB = path.join(__dirname, '../web/public');
+const PUB     = path.join(__dirname, '../web/public');  // graph.bin, names.json
+const GEN_OUT = path.join(__dirname, '../gen-out');     // traffic-full.bin, traffic.bin
 
 // ── Load graph.bin ────────────────────────────────────────────
 
@@ -52,7 +53,7 @@ console.log(`graph.bin v${gVersion}: ${n.toLocaleString()} nodes, ${e.toLocaleSt
 
 // ── Load traffic-full.bin (volume + speed, authoritative) ─────
 
-const rawF = await readFile(path.join(PUB, 'traffic-full.bin')).catch(() => {
+const rawF = await readFile(path.join(GEN_OUT, 'traffic-full.bin')).catch(() => {
   throw new Error('traffic-full.bin not found — run pnpm gen:traffic first');
 });
 const fbuf = rawF.buffer.slice(rawF.byteOffset, rawF.byteOffset + rawF.byteLength);
@@ -62,7 +63,7 @@ console.log(`traffic-full.bin v${tdFull.version}: ${tdFull.e.toLocaleString()} e
 
 // ── Load traffic.bin (routing multipliers) ────────────────────
 
-const rawT = await readFile(path.join(PUB, 'traffic.bin')).catch(() => {
+const rawT = await readFile(path.join(GEN_OUT, 'traffic.bin')).catch(() => {
   throw new Error('traffic.bin not found — run pnpm gen:traffic first');
 });
 const tbuf = rawT.buffer.slice(rawT.byteOffset, rawT.byteOffset + rawT.byteLength);

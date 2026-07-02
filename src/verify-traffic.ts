@@ -86,6 +86,7 @@ new Float64Array(buf, w.getLonsPtr(), n).set(graph.lons);
 const weights = new Float64Array(buf, w.getDistPtr(), e);
 const router: Router = {
   weights,
+  restrictions: { viaCount: 0, pairCount: 0, viaNodes: new Int32Array(0), pairOffs: new Int32Array(0), pairs: new Int32Array(0) },
   route(s, t) {
     const t0 = performance.now();
     const rc = w.astar(s, t);
