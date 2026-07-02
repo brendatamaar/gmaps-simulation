@@ -10,7 +10,6 @@
 // chQuery distance must equal the Dijkstra/A* distance.
 
 import { MinHeap } from "./heap.ts";
-import type { CSR } from "./csr.ts";
 
 // mid = -1 → original road edge. Otherwise the node this shortcut bypasses:
 // the shortcut u→w with mid=v stands for the path u→v→w. ca/cb are the two
@@ -28,8 +27,17 @@ export type CHEdge = {
 
 export class CHGraph {
   n: number;
+  // Full, append-only adjacency: the augmented graph (original edges + every
+  // shortcut). Queries (biDijkstra/CHRouter) and serialization read these.
   out: CHEdge[][];
   inc: CHEdge[][];
+  // Live working mirrors, used ONLY during preprocessing. They hold the same
+  // CHEdge objects but shrink as nodes are contracted (see removeFromLive), so
+  // witness searches and addOrRelax scan O(live-degree), not O(all-edges-ever).
+  // Without this, surviving "core" nodes accumulate millions of dead edges and
+  // the tail of the contraction order slows super-linearly to a near-hang.
+  lout: CHEdge[][];
+  linc: CHEdge[][];
   rank: Int32Array; // contraction order; assigned as nodes are contracted
   contracted: Uint8Array;
 
@@ -37,11 +45,13 @@ export class CHGraph {
     this.n = n;
     this.out = Array.from({ length: n }, () => []);
     this.inc = Array.from({ length: n }, () => []);
+    this.lout = Array.from({ length: n }, () => []);
+    this.linc = Array.from({ length: n }, () => []);
     this.rank = new Int32Array(n).fill(-1);
     this.contracted = new Uint8Array(n);
   }
 
-  /** Insert u→w, or relax an existing u→w to the smaller weight. */
+  /** Insert u→w, or relax an existing live u→w to the smaller weight. */
   addOrRelax(
     u: number,
     w: number,
@@ -50,7 +60,8 @@ export class CHGraph {
     ca: CHEdge | null,
     cb: CHEdge | null,
   ): void {
-    const existing = this.out[u]!.find((e) => e.to === w);
+    // Only live edges can be relaxed during preprocessing; search the live list.
+    const existing = this.lout[u]!.find((e) => e.to === w);
     if (existing) {
       if (weight < existing.weight) {
         existing.weight = weight;
@@ -70,10 +81,35 @@ export class CHGraph {
     outE.twin = incE; // twin = the counterpart edge in the other list, both directions
     this.out[u]!.push(outE);
     this.inc[w]!.push(incE);
+    this.lout[u]!.push(outE);
+    this.linc[w]!.push(incE);
+  }
+
+  /** Drop v from its live neighbours' working lists once v is contracted.
+   *  The full out/inc lists keep every edge for serialization + queries. */
+  removeFromLive(v: number): void {
+    for (const se of this.lout[v]!) removeRef(this.linc[se.to]!, se.twin!); // v→w : drop inc-edge at w
+    for (const pe of this.linc[v]!) removeRef(this.lout[pe.to]!, pe.twin!); // u→v : drop out-edge at u
+    this.lout[v] = [];
+    this.linc[v] = [];
   }
 }
 
-export function fromCSR(csr: CSR): CHGraph {
+/** Swap-remove an edge from an adjacency array by object identity (O(len)). */
+function removeRef(list: CHEdge[], e: CHEdge): void {
+  const i = list.indexOf(e);
+  if (i === -1) return;
+  const last = list.length - 1;
+  if (i !== last) list[i] = list[last]!;
+  list.pop();
+}
+
+type CSRLike = { n: number; offsets: Int32Array; targets: Int32Array; distances: Float64Array };
+
+export function fromCSR(
+  csr: CSRLike,
+  weightFn?: (edgeIdx: number) => number,
+): CHGraph {
   const g = new CHGraph(csr.n);
   const { offsets, targets, distances } = csr;
   for (let u = 0; u < csr.n; u++) {
@@ -82,7 +118,7 @@ export function fromCSR(csr: CSR): CHGraph {
     for (let e = start; e < end; e++) {
       const v = targets[e]!;
       if (v === -1) continue;
-      g.addOrRelax(u, v, distances[e]!, -1, null, null);
+      g.addOrRelax(u, v, weightFn ? weightFn(e) : distances[e]!, -1, null, null);
     }
   }
   return g;
@@ -164,39 +200,102 @@ export function biDijkstra(g: CHGraph, s: number, t: number): BiResult | null {
   return { dist: mu, path, settled };
 }
 
-// Witness search. Is there a path u→w (avoiding v) no longer than `limit`,
-// using only not-yet-contracted nodes? Bounded for tractability.
+// Witness search context: pre-allocated arrays shared across all witness searches
+// during preprocessing so we never allocate a Map or heap per search call.
+// Version stamp gives O(1) reset — no array clearing needed between calls.
+class WitnessCtx {
+  private dist: Float64Array;
+  private stamp: Int32Array;
+  private ver = 0;
+  // Growable heap for witness search. It must never silently drop frontier
+  // nodes: a dropped node makes the search miss a real witness, which inserts
+  // an unnecessary shortcut. In the densified tail those bogus shortcuts feed a
+  // runaway clique, so we grow on demand instead of capping.
+  private hNodes = new Int32Array(2048);
+  private hKeys  = new Float64Array(2048);
+  private hLen   = 0;
 
-function witnessExists(
-  g: CHGraph,
-  u: number,
-  w: number,
-  avoid: number,
-  limit: number,
-  maxSettled: number,
-): boolean {
-  const dist = new Map<number, number>();
-  const h = new MinHeap();
-  dist.set(u, 0);
-  h.push(u, 0);
-  let settled = 0;
+  constructor(n: number) {
+    this.dist  = new Float64Array(n);
+    this.stamp = new Int32Array(n);
+  }
 
-  while (h.size > 0) {
-    const { node: x, f } = h.pop()!;
-    if (f > (dist.get(x) ?? Infinity)) continue; // stale heap entry
-    if (f > limit) return false; // everything beyond is too far
-    if (x === w) return true;
-    if (++settled > maxSettled) return false; // give up → caller adds shortcut
-    for (const e of g.out[x]!) {
-      if (e.to === avoid || g.contracted[e.to]) continue;
-      const nd = f + e.weight;
-      if (nd <= limit && nd < (dist.get(e.to) ?? Infinity)) {
-        dist.set(e.to, nd);
-        h.push(e.to, nd);
-      }
+  private hGrow(): void {
+    const cap = this.hNodes.length * 2;
+    const ns = new Int32Array(cap); ns.set(this.hNodes); this.hNodes = ns;
+    const ks = new Float64Array(cap); ks.set(this.hKeys); this.hKeys = ks;
+  }
+
+  private hPush(node: number, key: number): void {
+    if (this.hLen >= this.hNodes.length) this.hGrow();
+    let i = this.hLen++;
+    this.hNodes[i] = node; this.hKeys[i] = key;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (this.hKeys[p]! <= key) break;
+      const tn = this.hNodes[p]!, tk = this.hKeys[p]!;
+      this.hNodes[p] = this.hNodes[i]!; this.hKeys[p] = this.hKeys[i]!;
+      this.hNodes[i] = tn; this.hKeys[i] = tk;
+      i = p;
     }
   }
-  return false;
+
+  private hPop(): { node: number; f: number } | undefined {
+    if (this.hLen === 0) return undefined;
+    const node = this.hNodes[0]!, f = this.hKeys[0]!;
+    const last = --this.hLen;
+    if (last > 0) {
+      this.hNodes[0] = this.hNodes[last]!; this.hKeys[0] = this.hKeys[last]!;
+      let i = 0;
+      while (true) {
+        let min = i;
+        const l = 2*i+1, r = l+1;
+        if (l < last && this.hKeys[l]! < this.hKeys[min]!) min = l;
+        if (r < last && this.hKeys[r]! < this.hKeys[min]!) min = r;
+        if (min === i) break;
+        const tn = this.hNodes[min]!, tk = this.hKeys[min]!;
+        this.hNodes[min] = this.hNodes[i]!; this.hKeys[min] = this.hKeys[i]!;
+        this.hNodes[i] = tn; this.hKeys[i] = tk;
+        i = min;
+      }
+    }
+    return { node, f };
+  }
+
+  exists(
+    g: CHGraph,
+    u: number,
+    w: number,
+    avoid: number,
+    limit: number,
+    maxSettled: number,
+  ): boolean {
+    const ver = ++this.ver;
+    const { dist, stamp } = this;
+    this.hLen = 0;
+    dist[u] = 0; stamp[u] = ver;
+    this.hPush(u, 0);
+    let settled = 0;
+
+    while (this.hLen > 0) {
+      const { node: x, f } = this.hPop()!;
+      if (stamp[x] !== ver || f > dist[x]!) continue; // stale
+      if (f > limit) return false;
+      if (x === w) return true;
+      if (++settled > maxSettled) return false;
+      for (const e of g.lout[x]!) {
+        // Live list holds only uncontracted targets; only `avoid` (the node
+        // being contracted, still live) must be skipped.
+        if (e.to === avoid) continue;
+        const nd = f + e.weight;
+        if (nd <= limit && (stamp[e.to] !== ver || nd < dist[e.to]!)) {
+          dist[e.to] = nd; stamp[e.to] = ver;
+          this.hPush(e.to, nd);
+        }
+      }
+    }
+    return false;
+  }
 }
 
 // Contract one node, finding the shortcuts its removal requires.
@@ -210,11 +309,21 @@ type Shortcut = {
   cb: CHEdge;
 };
 
+// Witness-search settle cap. Bounds witness cost on the large graph early on,
+// where a true witness is normally a few hops away so the cap is rarely hit. In
+// the small uncontracted core at the end the cap would instead cause missed
+// witnesses (→ unnecessary shortcuts → densification), so preprocess lifts it
+// to an effectively-exact value once the core is small (see contractMaxSettled).
 const WITNESS_MAX_SETTLED = 60;
 
-function findShortcuts(g: CHGraph, v: number): Shortcut[] {
-  const preds = g.inc[v]!.filter((e) => !g.contracted[e.to]);
-  const succs = g.out[v]!.filter((e) => !g.contracted[e.to]);
+function findShortcuts(
+  g: CHGraph,
+  v: number,
+  ctx: WitnessCtx,
+  maxSettled = WITNESS_MAX_SETTLED,
+): Shortcut[] {
+  const preds = g.linc[v]!; // live lists already exclude contracted neighbours
+  const succs = g.lout[v]!;
   const shortcuts: Shortcut[] = [];
 
   for (const pe of preds) {
@@ -225,7 +334,7 @@ function findShortcuts(g: CHGraph, v: number): Shortcut[] {
       const through = pe.weight + se.weight;
       // Shortcut needed only if no path u→w (avoiding v) is as short as u→v→w.
       // An equal-length witness counts: the through-v path isn't uniquely shortest.
-      if (!witnessExists(g, u, w, v, through, WITNESS_MAX_SETTLED)) {
+      if (!ctx.exists(g, u, w, v, through, maxSettled)) {
         // Children: the out-edge u→v (pe's twin) and the out-edge v→w (se).
         shortcuts.push({ u, w, weight: through, ca: pe.twin!, cb: se });
       }
@@ -235,16 +344,9 @@ function findShortcuts(g: CHGraph, v: number): Shortcut[] {
 }
 
 function edgeDifference(g: CHGraph, v: number, shortcutCount: number): number {
-  let deg = 0;
-  for (const e of g.inc[v]!) if (!g.contracted[e.to]) deg++;
-  for (const e of g.out[v]!) if (!g.contracted[e.to]) deg++;
+  // Live lists are already pruned of contracted neighbours.
+  const deg = g.linc[v]!.length + g.lout[v]!.length;
   return shortcutCount - deg;
-}
-
-function contractNode(g: CHGraph, v: number): number {
-  const shortcuts = findShortcuts(g, v);
-  for (const s of shortcuts) g.addOrRelax(s.u, s.w, s.weight, v, s.ca, s.cb);
-  return shortcuts.length;
 }
 
 // Full preprocessing with lazy edge-difference ordering.
@@ -257,10 +359,25 @@ export function preprocess(
 ): PreprocessStats {
   const t0 = performance.now();
   const n = g.n;
+  // One WitnessCtx for the entire preprocessing run — allocates typed arrays
+  // once and reuses them for every witness search via version stamping.
+  const ctx = new WitnessCtx(n);
   const pq = new MinHeap();
   for (let v = 0; v < n; v++) {
-    pq.push(v, edgeDifference(g, v, findShortcuts(g, v).length));
+    pq.push(v, edgeDifference(g, v, findShortcuts(g, v, ctx).length));
   }
+
+  // Cap re-insertions per node. High-degree tail nodes can bounce O(k²) times
+  // without this limit, turning the last 0.3% into 90% of the runtime.
+  // After MAX_BOUNCE deferred pops, contract the node in whatever order it lands.
+  // Slightly sub-optimal ordering for the last few nodes; negligible in practice.
+  const MAX_BOUNCE = 5;
+  const bounceCount = new Int32Array(n);
+
+  // Once the uncontracted core is this small, run witness searches to (near-)
+  // exactness so they stop fabricating shortcuts and the core can't densify into
+  // a clique. The core is tiny here, so an exact search is still cheap.
+  const CORE_EXACT = 5000;
 
   let nextRank = 0,
     totalShortcuts = 0;
@@ -268,12 +385,16 @@ export function preprocess(
     const { node: v } = pq.pop()!;
     if (g.contracted[v]) continue;
 
+    const remaining = n - nextRank;
+    const maxSettled = remaining <= CORE_EXACT ? remaining : WITNESS_MAX_SETTLED;
+
     // Lazy update: recompute v's priority; if it's no longer the minimum,
     // re-insert and defer. This keeps the ordering honest without eagerly
     // touching every neighbour on every contraction.
-    const sc = findShortcuts(g, v);
+    const sc = findShortcuts(g, v, ctx, maxSettled);
     const ed = edgeDifference(g, v, sc.length);
-    if (pq.size > 0 && ed > pq.peekF()) {
+    if (pq.size > 0 && ed > pq.peekF() && bounceCount[v]! < MAX_BOUNCE) {
+      bounceCount[v]++;
       pq.push(v, ed);
       continue;
     }
@@ -282,8 +403,9 @@ export function preprocess(
     g.contracted[v] = 1;
     g.rank[v] = nextRank++;
     totalShortcuts += sc.length;
+    g.removeFromLive(v); // prune v from neighbours' live lists so scans stay O(live-deg)
 
-    if (onProgress && nextRank % 20000 === 0) onProgress(nextRank, n);
+    if (onProgress && nextRank % 1000 === 0) onProgress(nextRank, n);
   }
 
   // Reset the contracted flags: queries use `rank`, not `contracted`, and the

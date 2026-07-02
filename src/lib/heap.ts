@@ -1,45 +1,49 @@
+// Min-heap backed by two parallel number[] arrays (no per-push object allocation).
 export class MinHeap {
-  private data: Array<{ node: number; f: number }> = [];
+  private ns: number[] = [];
+  private fs: number[] = [];
 
   push(node: number, f: number): void {
-    this.data.push({ node, f });
-    this.siftUp(this.data.length - 1);
-  }
-
-  pop(): { node: number; f: number } | undefined {
-    const top = this.data[0];
-    const last = this.data.pop()!;
-    if (this.data.length > 0) {
-      this.data[0] = last;
-      this.siftDown(0);
-    }
-    return top;
-  }
-
-  get size(): number { return this.data.length; }
-
-  /** Smallest f currently in the heap, or Infinity if empty. */
-  peekF(): number { return this.data.length > 0 ? this.data[0]!.f : Infinity; }
-
-  private siftUp(i: number): void {
+    let i = this.ns.length;
+    this.ns.push(node);
+    this.fs.push(f);
     while (i > 0) {
       const p = (i - 1) >> 1;
-      if (this.data[p]!.f <= this.data[i]!.f) break;
-      [this.data[p], this.data[i]] = [this.data[i]!, this.data[p]!];
+      if (this.fs[p]! <= f) break;
+      this._swap(p, i);
       i = p;
     }
   }
 
-  private siftDown(i: number): void {
-    const n = this.data.length;
+  pop(): { node: number; f: number } | undefined {
+    if (this.ns.length === 0) return undefined;
+    const node = this.ns[0]!, f = this.fs[0]!;
+    const last = this.ns.length - 1;
+    if (last > 0) {
+      this.ns[0] = this.ns[last]!;
+      this.fs[0] = this.fs[last]!;
+    }
+    this.ns.length = last;
+    this.fs.length = last;
+    let i = 0;
     while (true) {
+      const l = 2 * i + 1, r = l + 1, n = this.ns.length;
       let min = i;
-      const l = 2 * i + 1, r = 2 * i + 2;
-      if (l < n && this.data[l]!.f < this.data[min]!.f) min = l;
-      if (r < n && this.data[r]!.f < this.data[min]!.f) min = r;
+      if (l < n && this.fs[l]! < this.fs[min]!) min = l;
+      if (r < n && this.fs[r]! < this.fs[min]!) min = r;
       if (min === i) break;
-      [this.data[i], this.data[min]] = [this.data[min]!, this.data[i]!];
+      this._swap(min, i);
       i = min;
     }
+    return { node, f };
+  }
+
+  get size(): number { return this.ns.length; }
+  peekF(): number { return this.ns.length > 0 ? this.fs[0]! : Infinity; }
+
+  private _swap(a: number, b: number): void {
+    const tn = this.ns[a]!, tf = this.fs[a]!;
+    this.ns[a] = this.ns[b]!; this.fs[a] = this.fs[b]!;
+    this.ns[b] = tn; this.fs[b] = tf;
   }
 }
