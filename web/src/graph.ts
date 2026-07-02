@@ -15,6 +15,7 @@ export type Graph = {
   names: string[];         // name dictionary (names[0] === '')
   lats: Float64Array;      // [n]
   lons: Float64Array;      // [n]
+  scc: Uint8Array;         // [n] 1 = node is in the largest SCC
   bounds: GraphBounds;
 };
 
@@ -49,6 +50,10 @@ export async function loadGraph(): Promise<Graph> {
   const offLons = offLats + 8 * n;
   const offClasses = offLons + 8 * n;
   const offNameIds = Math.ceil((offClasses + e) / 4) * 4;
+  const offSCC = offNameIds + 4 * e;
+  const scc = version >= 3
+    ? new Uint8Array(ab, offSCC, n)
+    : new Uint8Array(n).fill(1);
 
   return {
     n,
@@ -61,25 +66,63 @@ export async function loadGraph(): Promise<Graph> {
     names,
     lats: new Float64Array(ab, offLats, n),
     lons: new Float64Array(ab, offLons, n),
+    scc,
     bounds: meta.bounds,
   };
 }
 
-// Nearest graph node to a lat/lng. Linear scan, fine for one city.
-export function nearestNode(graph: Graph, lat: number, lon: number): number {
-  const { n, lats, lons } = graph;
-  // Squared planar distance is enough for "nearest"; cos-correct the longitude
-  // so the comparison isn't skewed near the equator.
-  const cosLat = Math.cos((lat * Math.PI) / 180);
-  let best = 0;
-  let bestD = Infinity;
+// Precomputed per-node minimum edge class (lowest class number = highest-ranked road).
+// Computed lazily once per Graph instance; reused across all nearestNode calls.
+const _bestClassCache = new WeakMap<Graph, Uint8Array>();
+
+function getBestClass(graph: Graph): Uint8Array {
+  let cache = _bestClassCache.get(graph);
+  if (cache) return cache;
+  const { n, offsets, classes } = graph;
+  cache = new Uint8Array(n).fill(7);
   for (let i = 0; i < n; i++) {
+    for (let ei = offsets[i]!; ei < offsets[i + 1]!; ei++) {
+      if (classes[ei]! < cache[i]!) cache[i] = classes[ei]!;
+    }
+  }
+  _bestClassCache.set(graph, cache);
+  return cache;
+}
+
+// Nearest graph node to a lat/lng, restricted to the largest SCC.
+//
+// maxClass (optional): only consider nodes that have at least one outgoing edge
+// of class ≤ maxClass. Use 3 (secondary) for drive-mode snapping so the origin/
+// destination lands on a real arterial rather than a mall access or service road,
+// which can otherwise add 1-2 km of detour before the router reaches the main
+// corridor. Falls back to unrestricted search if no qualifying node is found.
+export function nearestNode(graph: Graph, lat: number, lon: number, maxClass = 7): number {
+  const { n, lats, lons, scc, offsets } = graph;
+  const bestClass = maxClass < 7 ? getBestClass(graph) : null;
+  const cosLat = Math.cos((lat * Math.PI) / 180);
+
+  // For drive-mode snapping (maxClass < 7) prefer intersection nodes (out-degree ≥ 2)
+  // so we never start a route on a one-way stub that forces the router to first travel
+  // in the wrong direction before reaching the arterial network.
+  let best = -1;       // nearest arterial node with out-degree ≥ 2
+  let bestD = Infinity;
+  let bestAny = -1;    // nearest arterial node of any degree (fallback)
+  let bestAnyD = Infinity;
+
+  for (let i = 0; i < n; i++) {
+    if (!scc[i]) continue;
+    if (bestClass && bestClass[i]! > maxClass) continue;
     const dLat = lats[i]! - lat;
     const dLon = (lons[i]! - lon) * cosLat;
     const d = dLat * dLat + dLon * dLon;
+    if (d < bestAnyD) { bestAnyD = d; bestAny = i; }
+    if (maxClass < 7 && offsets[i + 1]! - offsets[i]! < 2) continue;
     if (d < bestD) { bestD = d; best = i; }
   }
-  return best;
+
+  if (best >= 0) return best;
+  if (bestAny >= 0) return bestAny;
+  return nearestNode(graph, lat, lon); // final fallback: unrestricted
 }
 
 // Index of the cheapest edge a->b (parallel edges are rare), or -1 if none.
@@ -93,14 +136,4 @@ export function cheapestEdge(graph: Graph, a: number, b: number): number {
   return ei;
 }
 
-const EARTH_R = 6_371_000;
-
-// Great-circle distance in metres between two lat/lon points.
-export function haversine(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return EARTH_R * 2 * Math.asin(Math.sqrt(a));
-}
+export { haversine } from '../../src/lib/geo.ts';
