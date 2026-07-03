@@ -427,6 +427,31 @@
         white-space: nowrap;
       }
 
+      /* Calculate Route button */
+      #calc-route {
+        width: 100%;
+        padding: 10px;
+        cursor: pointer;
+        font-size: 14px;
+        font-family: inherit;
+        background: #1a73e8;
+        color: #fff;
+        border: none;
+        border-radius: 8px;
+        font-weight: 500;
+        transition: background 0.15s, opacity 0.15s;
+      }
+      #calc-route:hover:not(:disabled) {
+        background: #1558b0;
+      }
+      #calc-route:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      #calc-route + #clear {
+        margin-top: 8px;
+      }
+
       /* Footer */
       .foot {
         padding: 10px 16px 14px;
@@ -537,6 +562,7 @@
 
         <div class="foot">
           <div class="note" id="modenote"></div>
+          <button id="calc-route" disabled>Calculate Route</button>
           <button id="clear">Clear route</button>
         </div>
       </div>

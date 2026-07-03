@@ -460,6 +460,11 @@ function scheduleDragRecompute() {
   });
 }
 
+function updateCalcButton() {
+  const btn = $("calc-route") as HTMLButtonElement;
+  btn.disabled = startIdx === null || endIdx === null;
+}
+
 function setEndpoint(idx: number, label: string | null = null) {
   if (startIdx === null || (startIdx !== null && endIdx !== null)) {
     startIdx = idx;
@@ -470,12 +475,15 @@ function setEndpoint(idx: number, label: string | null = null) {
     setMarker("origin", idx);
     setMarker("dest", null);
     setHint("Search or click the map to set the destination.");
+    updateCalcButton();
     renderAll();
   } else {
     endIdx = idx;
     endLabel = label;
     setMarker("dest", idx);
-    recomputeFull();
+    setHint("Ready — click 'Calculate Route' to find routes.");
+    updateCalcButton();
+    renderAll();
   }
 }
 
@@ -495,13 +503,16 @@ function setEndpointDirect(
     setMarker("dest", endIdx);
   }
   if (startIdx !== null && endIdx !== null) {
-    recomputeFull();
+    setHint("Ready — click 'Calculate Route' to find routes.");
+    updateCalcButton();
+    renderAll();
   } else {
     setHint(
       startIdx === null
         ? "Search or click the map to set the origin."
         : "Search or click the map to set the destination.",
     );
+    updateCalcButton();
     renderAll();
   }
 }
@@ -536,6 +547,7 @@ function clearAll() {
   setMarker("origin", null);
   setMarker("dest", null);
   setHint("Search or click the map to set the origin.");
+  updateCalcButton();
   renderAll();
 }
 
@@ -747,6 +759,7 @@ function wireControls() {
           ? "Click the map to set the origin."
           : "Click the map to set the destination.",
       );
+      updateCalcButton();
       renderAll();
     }
   });
@@ -769,11 +782,13 @@ function wireControls() {
   hourInput.addEventListener("input", () => {
     hour = parseFloat(hourInput.value);
     $("hourval").textContent = formatClock(hour);
-    scheduleDragRecompute();
   });
   hourInput.addEventListener("change", () => {
-    recomputeFull();
     updateTrafficOverlay();
+  });
+
+  $("calc-route").addEventListener("click", () => {
+    recomputeFull();
   });
 
   const trafficInput = $("traffic") as HTMLInputElement;
