@@ -53,6 +53,12 @@ const offsets   = new Int32Array(ab, G_HDR, n + 1);
 const targets   = new Int32Array(ab, offTgt, e);
 const distances = new Float64Array(ab, offDst, e);
 const classes   = new Uint8Array(ab, offCls, e);
+// SCC mask (v3+): landmark selection must stay inside the largest SCC —
+// a landmark in a disconnected fragment has Infinity to almost every node,
+// which both degenerates farthest-point sampling and yields useless bounds.
+const offNId = Math.ceil((offCls + e) / 4) * 4;
+const offSCC = offNId + 4 * e;
+const scc = gVer >= 3 ? new Uint8Array(ab, offSCC, n) : new Uint8Array(n).fill(1);
 
 console.log(`  v${gVer}: ${n.toLocaleString()} nodes, ${e.toLocaleString()} edges`);
 
@@ -149,10 +155,17 @@ const landmarks: number[] = [];
 // minReach[v] = min dist from v to any landmark so far (in bwd graph → backward reach)
 const minReach = new Float32Array(n).fill(Infinity);
 
-// Bootstrap: pick node 0, run forward Dijkstra to find the node most "far from everything"
-let pickFwd = dijkstra(0, offsets, targets, freeFlowW);
-let farthest = 0;
-for (let v = 1; v < n; v++) { if (pickFwd[v]! > pickFwd[farthest]!) farthest = v; }
+// Bootstrap: seed from an SCC node and take the farthest SCC node actually
+// reached. Restricting to the largest SCC (and to finite distances) keeps the
+// sampling on the real road network instead of disconnected fragments.
+let seed = 0;
+while (seed < n && !scc[seed]) seed++;
+if (seed === n) throw new Error('no SCC nodes in graph.bin');
+const pickFwd = dijkstra(seed, offsets, targets, freeFlowW);
+let farthest = seed;
+for (let v = 0; v < n; v++) {
+  if (scc[v] && Number.isFinite(pickFwd[v]!) && pickFwd[v]! > pickFwd[farthest]!) farthest = v;
+}
 
 // The fwd runs for the selected landmarks are saved — they become the fwd data.
 const fwdData: Float32Array[] = [];
@@ -162,11 +175,15 @@ for (let l = 0; l < NUM_LANDMARKS; l++) {
   if (l === 0) {
     landmarks.push(farthest);
   } else {
-    // Farthest node from ALL existing landmarks (in the backward direction from landmarks)
+    // Farthest SCC node from ALL existing landmarks (backward direction).
+    // Within the SCC every minReach is finite, so this never degenerates.
     let best = -1, bestD = -1;
     for (let v = 0; v < n; v++) {
-      if (minReach[v]! > bestD) { bestD = minReach[v]!; best = v; }
+      if (!scc[v]) continue;
+      const d = minReach[v]!;
+      if (Number.isFinite(d) && d > bestD) { bestD = d; best = v; }
     }
+    if (best < 0) throw new Error('farthest-point sampling found no reachable SCC candidate');
     landmarks.push(best);
   }
 
