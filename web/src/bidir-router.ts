@@ -10,7 +10,7 @@
 
 import type { Graph } from './graph.ts';
 import type { AltData } from './alt.ts';
-import { makeForwardHeuristic, makeBackwardHeuristic } from './alt.ts';
+import { makeQueryHeuristics } from './alt.ts';
 import { isForbidden, type Restrictions } from './router.ts';
 import { TypedMinHeap } from './typed-heap.ts';
 
@@ -88,8 +88,14 @@ class BidirRouter {
     const { offsets, targets } = graph;
     const { revOff, revSrc, revEI } = rev;
 
-    const hF = alt ? makeForwardHeuristic(alt, t)  : (_: number) => 0;
-    const hB = alt ? makeBackwardHeuristic(alt, s) : (_: number) => 0;
+    // Independent forward/backward lower bounds break the bidirectional
+    // termination proof (minF+minB>=mu no longer guarantees optimality once
+    // hF and hB aren't complementary). Averaging them into potentials that
+    // sum to zero per node (Ikeda et al. / Goldberg-Harrelson) restores it
+    // without changing the push/pop or stopping-condition code below.
+    const q = alt ? makeQueryHeuristics(alt, s, t) : null;
+    const hF = q ? (v: number) => (q.hF(v) - q.hB(v)) / 2 : (_: number) => 0;
+    const hB = q ? (v: number) => (q.hB(v) - q.hF(v)) / 2 : (_: number) => 0;
 
     const gFv = (v: number) => (stF[v] === ver ? gF[v]! : Infinity);
     const gBv = (v: number) => (stB[v] === ver ? gB[v]! : Infinity);
