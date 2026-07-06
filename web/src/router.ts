@@ -35,7 +35,48 @@ export type Restrictions = {
   pairs:    Int32Array;  // interleaved (from, to) pairs
 };
 
-async function loadRestrictions(): Promise<Restrictions> {
+function findViaIdx(viaNodes: Int32Array, via: number): number {
+  let lo = 0, hi = viaNodes.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const v = viaNodes[mid]!;
+    if (v === via) return mid;
+    if (v < via) lo = mid + 1; else hi = mid - 1;
+  }
+  return -1;
+}
+
+// True when the turn prev -> via -> next is forbidden by a loaded restriction.
+// Shared by the JS bidirectional router and by callers that need to validate
+// a path assembled by a restriction-unaware router (e.g. CH).
+export function isForbidden(r: Restrictions, prev: number, via: number, next: number): boolean {
+  if (r.viaCount === 0 || prev < 0) return false;
+  const vi = findViaIdx(r.viaNodes, via);
+  if (vi < 0) return false;
+  const pStart = r.pairOffs[vi]!;
+  const pEnd   = vi < r.viaCount - 1 ? r.pairOffs[vi + 1]! : r.pairCount;
+  for (let pi = pStart; pi < pEnd; pi++) {
+    if (r.pairs[pi * 2]! === prev && r.pairs[pi * 2 + 1]! === next) return true;
+  }
+  return false;
+}
+
+// True when any consecutive triple along `path` is a forbidden turn. CH
+// contraction/queries are not restriction-aware, so callers using CH must
+// validate its path against this before trusting it.
+export function pathViolatesRestriction(r: Restrictions, path: ArrayLike<number>): boolean {
+  if (r.viaCount === 0) return false;
+  for (let i = 1; i < path.length - 1; i++) {
+    if (isForbidden(r, path[i - 1]!, path[i]!, path[i + 1]!)) return true;
+  }
+  return false;
+}
+
+export function emptyRestrictions(): Restrictions {
+  return { viaCount: 0, pairCount: 0, viaNodes: new Int32Array(0), pairOffs: new Int32Array(0), pairs: new Int32Array(0) };
+}
+
+export async function loadRestrictions(): Promise<Restrictions> {
   const res = await fetch('restrictions.bin');
   if (!res.ok) return { viaCount: 0, pairCount: 0, viaNodes: new Int32Array(0), pairOffs: new Int32Array(0), pairs: new Int32Array(0) };
   const ab = await res.arrayBuffer();

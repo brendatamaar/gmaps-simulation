@@ -11,31 +11,8 @@
 import type { Graph } from './graph.ts';
 import type { AltData } from './alt.ts';
 import { makeForwardHeuristic, makeBackwardHeuristic } from './alt.ts';
-import type { Restrictions } from './router.ts';
+import { isForbidden, type Restrictions } from './router.ts';
 import { TypedMinHeap } from './typed-heap.ts';
-
-function findViaIdx(viaNodes: Int32Array, via: number): number {
-  let lo = 0, hi = viaNodes.length - 1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >>> 1;
-    const v = viaNodes[mid]!;
-    if (v === via) return mid;
-    if (v < via) lo = mid + 1; else hi = mid - 1;
-  }
-  return -1;
-}
-
-function isForbidden(r: Restrictions, prev: number, via: number, next: number): boolean {
-  if (r.viaCount === 0 || prev < 0) return false;
-  const vi = findViaIdx(r.viaNodes, via);
-  if (vi < 0) return false;
-  const pStart = r.pairOffs[vi]!;
-  const pEnd   = vi < r.viaCount - 1 ? r.pairOffs[vi + 1]! : r.pairCount;
-  for (let pi = pStart; pi < pEnd; pi++) {
-    if (r.pairs[pi * 2]! === prev && r.pairs[pi * 2 + 1]! === next) return true;
-  }
-  return false;
-}
 
 export type BidirResult = {
   path: Int32Array;
