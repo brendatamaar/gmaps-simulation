@@ -7,13 +7,20 @@ let distPtr:    usize = 0; // f64[E]
 let latsPtr:    usize = 0; // f64[N]
 let lonsPtr:    usize = 0; // f64[N]
 
-// A* scratch (allocated once in initGraph)
-let gPtr:     usize = 0; // f64[N] g-scores
-let parentPtr: usize = 0; // i32[N] parent pointers
-let closedPtr: usize = 0; // u8[N]  closed set
+// A* scratch (allocated once in initGraph). Instead of an O(N) reset per
+// query, g/parent and closed entries are valid only when their version stamp
+// matches the current query id (same trick as the JS BidirRouter).
+let gPtr:     usize = 0; // f64[N] g-scores (valid iff stamp matches)
+let parentPtr: usize = 0; // i32[N] parent pointers (valid iff stamp matches)
+let parentEdgePtr: usize = 0; // i32[N] edge index used to reach the node
+let stampPtr:  usize = 0; // i32[N] g/parent valid iff stamp[i] === queryVer
+let closedPtr: usize = 0; // i32[N] closed iff closed[i] === queryVer
+let visitOrderPtr: usize = 0; // i32[N] node settled at step i (for animation replay)
+let queryVer:  i32   = 0;
 
 // Result
 let pathPtr:    usize = 0; // i32[N]
+let pathEdgesPtr: usize = 0; // i32[N] edge index per hop; pathEdges[k] = edge path[k]→path[k+1]
 let pathLen:    i32   = 0;
 let distResult: f64   = 0.0;
 let visitedRes: i32   = 0;
@@ -58,10 +65,20 @@ export function initGraph(nodeCount: i32, edgeCount: i32): void {
   lonsPtr    = heap.alloc(<usize>(N << 3));
   gPtr       = heap.alloc(<usize>(N << 3));
   parentPtr  = heap.alloc(<usize>(N << 2));
-  closedPtr  = heap.alloc(<usize>N);
+  parentEdgePtr = heap.alloc(<usize>(N << 2));
+  stampPtr   = heap.alloc(<usize>(N << 2));
+  closedPtr  = heap.alloc(<usize>(N << 2));
+  visitOrderPtr = heap.alloc(<usize>(N << 2));
+  // heap.alloc doesn't zero memory; stamps must start below any queryVer.
+  memory.fill(stampPtr,  0, <usize>(N << 2));
+  memory.fill(closedPtr, 0, <usize>(N << 2));
+  queryVer = 0;
   pathPtr    = heap.alloc(<usize>(N << 2));
-  hNodePtr   = heap.alloc(<usize>(E << 2));
-  hScorePtr  = heap.alloc(<usize>(E << 3));
+  pathEdgesPtr = heap.alloc(<usize>(N << 2));
+  // +1: worst case is one push per improving edge relaxation (≤E) plus the
+  // initial start-node push.
+  hNodePtr   = heap.alloc(<usize>((E + 1) << 2));
+  hScorePtr  = heap.alloc(<usize>((E + 1) << 3));
 }
 
 export function initRestrictions(viaCount: i32, pairCount: i32): void {
@@ -79,9 +96,11 @@ export function getDistPtr():    usize { return distPtr; }
 export function getLatsPtr():    usize { return latsPtr; }
 export function getLonsPtr():    usize { return lonsPtr; }
 export function getPathPtr():    usize { return pathPtr; }
+export function getPathEdgesPtr(): usize { return pathEdgesPtr; }
 export function getPathLen():    i32   { return pathLen; }
 export function getDistMeters(): f64   { return distResult; }
 export function getNodesVisited(): i32 { return visitedRes; }
+export function getVisitOrderPtr(): usize { return visitOrderPtr; }
 export function getRViaPtr():    usize { return rViaPtr; }
 export function getROffPtr():    usize { return rOffPtr; }
 export function getRPairPtr():   usize { return rPairPtr; }
@@ -166,11 +185,7 @@ function isForbidden(prevNode: i32, curNode: i32, nextNode: i32): bool {
 // hScale: multiply the haversine heuristic so A* stays admissible when weights
 // are scaled (walk ×20, bike ×6.67). Drive stays at 1.0 (motorway stretch = 1).
 export function astar(startIdx: i32, endIdx: i32, hScale: f64): i32 {
-  for (let i = 0; i < N; i++) {
-    store<f64>(gPtr      + (<usize>i << 3), Infinity);
-    store<i32>(parentPtr + (<usize>i << 2), -1);
-    store<u8> (closedPtr + <usize>i,        0);
-  }
+  const ver = ++queryVer;
   hSize      = 0;
   pathLen    = 0;
   visitedRes = 0;
@@ -178,7 +193,9 @@ export function astar(startIdx: i32, endIdx: i32, hScale: f64): i32 {
   const endLat = load<f64>(latsPtr + (<usize>endIdx << 3));
   const endLon = load<f64>(lonsPtr + (<usize>endIdx << 3));
 
-  store<f64>(gPtr + (<usize>startIdx << 3), 0.0);
+  store<f64>(gPtr      + (<usize>startIdx << 3), 0.0);
+  store<i32>(parentPtr + (<usize>startIdx << 2), -1);
+  store<i32>(stampPtr  + (<usize>startIdx << 2), ver);
   hPush(startIdx,
     hScale * haversine(load<f64>(latsPtr + (<usize>startIdx << 3)),
               load<f64>(lonsPtr + (<usize>startIdx << 3)),
@@ -186,8 +203,9 @@ export function astar(startIdx: i32, endIdx: i32, hScale: f64): i32 {
 
   while (hSize > 0) {
     const cur = hPop();
-    if (load<u8>(closedPtr + <usize>cur)) continue;
-    store<u8>(closedPtr + <usize>cur, 1);
+    if (load<i32>(closedPtr + (<usize>cur << 2)) === ver) continue;
+    store<i32>(closedPtr + (<usize>cur << 2), ver);
+    store<i32>(visitOrderPtr + (<usize>visitedRes << 2), cur);
     visitedRes++;
 
     if (cur === endIdx) break;
@@ -199,12 +217,17 @@ export function astar(startIdx: i32, endIdx: i32, hScale: f64): i32 {
 
     for (let ei = edgeStart; ei < edgeEnd; ei++) {
       const nb = load<i32>(targetsPtr + (<usize>ei << 2));
-      if (nb === -1 || load<u8>(closedPtr + <usize>nb)) continue;
+      if (nb === -1 || load<i32>(closedPtr + (<usize>nb << 2)) === ver) continue;
       if (isForbidden(prevNode, cur, nb)) continue;
       const tentative = curG + load<f64>(distPtr + (<usize>ei << 3));
-      if (tentative < load<f64>(gPtr + (<usize>nb << 3))) {
+      const nbG = load<i32>(stampPtr + (<usize>nb << 2)) === ver
+        ? load<f64>(gPtr + (<usize>nb << 3))
+        : Infinity;
+      if (tentative < nbG) {
         store<f64>(gPtr      + (<usize>nb << 3), tentative);
         store<i32>(parentPtr + (<usize>nb << 2), cur);
+        store<i32>(parentEdgePtr + (<usize>nb << 2), ei);
+        store<i32>(stampPtr  + (<usize>nb << 2), ver);
         hPush(nb, tentative +
           hScale * haversine(load<f64>(latsPtr + (<usize>nb << 3)),
                     load<f64>(lonsPtr + (<usize>nb << 3)),
@@ -213,10 +236,9 @@ export function astar(startIdx: i32, endIdx: i32, hScale: f64): i32 {
     }
   }
 
-  const finalG = load<f64>(gPtr + (<usize>endIdx << 3));
-  if (finalG === Infinity) return -1;
+  if (load<i32>(stampPtr + (<usize>endIdx << 2)) !== ver) return -1;
 
-  distResult = finalG;
+  distResult = load<f64>(gPtr + (<usize>endIdx << 3));
 
   // Reconstruct path (built in reverse, then flipped)
   let cur = endIdx;
@@ -233,6 +255,13 @@ export function astar(startIdx: i32, endIdx: i32, hScale: f64): i32 {
     store<i32>(pathPtr + (<usize>j << 2), tmp);
   }
   pathLen = len;
+
+  // Edge indices per hop: pathEdges[k] = edge used to reach path[k+1].
+  // parentEdge entries survive reconstruction, so read them off the final path.
+  for (let k = 0; k < len - 1; k++) {
+    const nb = load<i32>(pathPtr + (<usize>(k + 1) << 2));
+    store<i32>(pathEdgesPtr + (<usize>k << 2), load<i32>(parentEdgePtr + (<usize>nb << 2)));
+  }
 
   return 0;
 }
