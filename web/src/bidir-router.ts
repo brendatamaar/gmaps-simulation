@@ -12,6 +12,7 @@ import type { Graph } from './graph.ts';
 import type { AltData } from './alt.ts';
 import { makeForwardHeuristic, makeBackwardHeuristic } from './alt.ts';
 import type { Restrictions } from './router.ts';
+import { TypedMinHeap } from './typed-heap.ts';
 
 function findViaIdx(viaNodes: Int32Array, via: number): number {
   let lo = 0, hi = viaNodes.length - 1;
@@ -85,10 +86,8 @@ class BidirRouter {
   private closedVerF: Int32Array; // stF version when node was settled in forward search
   private closedVerB: Int32Array; // stB version when node was settled in backward search
 
-  private hFN: number[] = [];
-  private hFK: number[] = [];
-  private hBN: number[] = [];
-  private hBK: number[] = [];
+  private heapF = new TypedMinHeap(4096);
+  private heapB = new TypedMinHeap(4096);
 
   constructor(n: number) {
     this.gF         = new Float64Array(n);
@@ -99,41 +98,6 @@ class BidirRouter {
     this.stB        = new Int32Array(n);
     this.closedVerF = new Int32Array(n);
     this.closedVerB = new Int32Array(n);
-  }
-
-  private hpush(ns: number[], ks: number[], node: number, key: number): void {
-    let i = ns.length;
-    ns.push(node); ks.push(key);
-    while (i > 0) {
-      const p = (i - 1) >> 1;
-      if (ks[p]! <= ks[i]!) break;
-      const tn = ns[p]!, tk = ks[p]!;
-      ns[p] = ns[i]!; ks[p] = ks[i]!;
-      ns[i] = tn;     ks[i] = tk;
-      i = p;
-    }
-  }
-
-  private hpop(ns: number[], ks: number[]): number {
-    const node = ns[0]!;
-    const last = ns.length - 1;
-    if (last > 0) {
-      ns[0] = ns[last]!; ks[0] = ks[last]!;
-      ns.length = last; ks.length = last;
-      let i = 0;
-      while (true) {
-        const l = 2 * i + 1, r = l + 1, sz = ns.length;
-        let m = i;
-        if (l < sz && ks[l]! < ks[m]!) m = l;
-        if (r < sz && ks[r]! < ks[m]!) m = r;
-        if (m === i) break;
-        const tn = ns[m]!, tk = ks[m]!;
-        ns[m] = ns[i]!; ks[m] = ks[i]!;
-        ns[i] = tn;     ks[i] = tk;
-        i = m;
-      }
-    } else { ns.length = 0; ks.length = 0; }
-    return node;
   }
 
   query(
@@ -156,22 +120,20 @@ class BidirRouter {
     gF[s] = 0; stF[s] = ver; parF[s] = -1;
     gB[t] = 0; stB[t] = ver; parB[t] = -1;
 
-    const hFN = this.hFN; hFN.length = 0;
-    const hFK = this.hFK; hFK.length = 0;
-    const hBN = this.hBN; hBN.length = 0;
-    const hBK = this.hBK; hBK.length = 0;
-    this.hpush(hFN, hFK, s, hF(s));
-    this.hpush(hBN, hBK, t, hB(t));
+    const heapF = this.heapF; heapF.clear();
+    const heapB = this.heapB; heapB.clear();
+    heapF.push(s, hF(s));
+    heapB.push(t, hB(t));
 
     let mu = Infinity, meet = -1, settled = 0;
 
-    while (hFN.length > 0 || hBN.length > 0) {
-      const minF = hFK[0] ?? Infinity;
-      const minB = hBK[0] ?? Infinity;
+    while (heapF.size > 0 || heapB.size > 0) {
+      const minF = heapF.peekKey();
+      const minB = heapB.peekKey();
       if (minF + minB >= mu) break;
 
       if (minF <= minB) {
-        const u = this.hpop(hFN, hFK);
+        const u = heapF.pop();
         if (closedVerF[u] === ver) continue;
         closedVerF[u] = ver;
         settled++;
@@ -185,11 +147,11 @@ class BidirRouter {
           const ng = gU + weights[ei]!;
           if (ng < gFv(v)) {
             gF[v] = ng; stF[v] = ver; parF[v] = u;
-            this.hpush(hFN, hFK, v, ng + hF(v));
+            heapF.push(v, ng + hF(v));
           }
         }
       } else {
-        const v = this.hpop(hBN, hBK);
+        const v = heapB.pop();
         if (closedVerB[v] === ver) continue;
         closedVerB[v] = ver;
         settled++;
@@ -204,7 +166,7 @@ class BidirRouter {
           const ng = gV + weights[revEI[k]!]!;
           if (ng < gBv(u)) {
             gB[u] = ng; stB[u] = ver; parB[u] = v;
-            this.hpush(hBN, hBK, u, ng + hB(u));
+            heapB.push(u, ng + hB(u));
           }
         }
       }

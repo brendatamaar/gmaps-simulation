@@ -6,6 +6,8 @@
 //
 // ch.bin binary layout: see src/export-ch.ts header comment.
 
+import { TypedMinHeap } from './typed-heap.ts';
+
 export type CHData = {
   n: number;
   rank: Int32Array;
@@ -90,61 +92,6 @@ export async function loadCH(): Promise<CHData | null> {
   }
 }
 
-// Dynamic min-heap for CH queries.  Uses plain arrays so it can grow without
-// reallocation concerns — the upward search space is tiny (~100–2000 nodes)
-// but can accumulate stale heap entries, so we don't cap the size.
-class CHHeap {
-  private ns: number[] = [];  // node indices
-  private ks: number[] = [];  // distance keys
-
-  get size() { return this.ns.length; }
-  peek(): number { return this.ks[0] ?? Infinity; }
-
-  push(node: number, key: number): void {
-    let i = this.ns.length;
-    this.ns.push(node);
-    this.ks.push(key);
-    while (i > 0) {
-      const p = (i - 1) >> 1;
-      if (this.ks[p]! <= key) break;
-      this._swap(p, i);
-      i = p;
-    }
-  }
-
-  pop(): { node: number; d: number } | undefined {
-    if (this.ns.length === 0) return undefined;
-    const node = this.ns[0]!, d = this.ks[0]!;
-    const last = this.ns.length - 1;
-    if (last > 0) {
-      this.ns[0] = this.ns[last]!;
-      this.ks[0] = this.ks[last]!;
-      this.ns.length = last;
-      this.ks.length = last;
-      let i = 0;
-      while (true) {
-        const l = 2 * i + 1, r = l + 1, n = last;
-        let min = i;
-        if (l < n && this.ks[l]! < this.ks[min]!) min = l;
-        if (r < n && this.ks[r]! < this.ks[min]!) min = r;
-        if (min === i) break;
-        this._swap(min, i);
-        i = min;
-      }
-    } else {
-      this.ns.length = 0;
-      this.ks.length = 0;
-    }
-    return { node, d };
-  }
-
-  private _swap(a: number, b: number): void {
-    const tn = this.ns[a]!, tk = this.ks[a]!;
-    this.ns[a] = this.ns[b]!; this.ks[a] = this.ks[b]!;
-    this.ns[b] = tn; this.ks[b] = tk;
-  }
-}
-
 // Expand shortcut edge `ei` into original road edges, appending destination
 // nodes to `path`.  Terminates at original edges (edgeMid[ei] === -1).
 function unpackInto(path: number[], ei: number, ch: CHData): void {
@@ -169,6 +116,8 @@ export class CHRouter {
   private parB: Int32Array;
   private eFIdx: Int32Array; // forward: edge index that settled this node
   private eBIdx: Int32Array; // backward: edge index that settled this node
+  private heapF = new TypedMinHeap(1024);
+  private heapB = new TypedMinHeap(1024);
 
   constructor(ch: CHData) {
     this.ch = ch;
@@ -198,52 +147,62 @@ export class CHRouter {
     distF[s] = 0; stF[s] = ver; parF[s] = -1;
     distB[t] = 0; stB[t] = ver; parB[t] = -1;
 
-    const hF = new CHHeap();
-    const hB = new CHHeap();
+    const hF = this.heapF; hF.clear();
+    const hB = this.heapB; hB.clear();
     hF.push(s, 0);
     hB.push(t, 0);
 
     let mu = Infinity, meet = -1, settled = 0;
 
-    // Forward upward search from s.
-    while (hF.size > 0) {
-      const item = hF.pop()!;
-      const u = item.node, d = item.d;
-      if (d > dF(u)) continue;
-      settled++;
-      const ob = dB(u);
-      if (ob < Infinity && d + ob < mu) { mu = d + ob; meet = u; }
-      const rankU = rank[u]!;
-      for (let ei = outOff[u]!; ei < outOff[u + 1]!; ei++) {
-        const w = edgeTo[ei]!;
-        if (rank[w]! <= rankU) continue; // upward only
-        const nd = d + edgeW[ei]!;
-        if (nd < dF(w)) {
-          distF[w] = nd; stF[w] = ver; parF[w] = u; eFIdx[w] = ei;
-          hF.push(w, nd);
-        }
-      }
-    }
+    // Interleaved upward searches with pruning: in CH the shortest path is
+    // up-then-down through its highest-rank node, so a direction whose min
+    // queue key already reaches mu can never improve the answer and stops.
+    // (This is per-direction, unlike bidirectional A*'s summed condition.)
+    // Interleaving by the smaller key lets mu form early so pruning bites;
+    // running each side to exhaustion (as before) settles far more nodes.
+    while (hF.size > 0 || hB.size > 0) {
+      const minF = hF.size > 0 && hF.peekKey() < mu ? hF.peekKey() : Infinity;
+      const minB = hB.size > 0 && hB.peekKey() < mu ? hB.peekKey() : Infinity;
+      if (minF === Infinity && minB === Infinity) break;
 
-    // Backward upward search from t.
-    // Iterates incoming edges to w (stored in revOff/revEi as out-edge indices),
-    // relaxing the source node s′ where rank[s′] > rank[w].
-    while (hB.size > 0) {
-      const item = hB.pop()!;
-      const w = item.node, d = item.d;
-      if (d > dB(w)) continue;
-      settled++;
-      const of = dF(w);
-      if (of < Infinity && d + of < mu) { mu = d + of; meet = w; }
-      const rankW = rank[w]!;
-      for (let k = revOff[w]!; k < revOff[w + 1]!; k++) {
-        const ei = revEi[k]!;
-        const s2 = edgeFrom[ei]!; // source of this out-edge s2→w
-        if (rank[s2]! <= rankW) continue; // upward only from w's perspective
-        const nd = d + edgeW[ei]!;
-        if (nd < dB(s2)) {
-          distB[s2] = nd; stB[s2] = ver; parB[s2] = w; eBIdx[s2] = ei;
-          hB.push(s2, nd);
+      if (minF <= minB) {
+        // Forward upward step from s.
+        const d = hF.peekKey();
+        const u = hF.pop();
+        if (d > dF(u)) continue;
+        settled++;
+        const ob = dB(u);
+        if (ob < Infinity && d + ob < mu) { mu = d + ob; meet = u; }
+        const rankU = rank[u]!;
+        for (let ei = outOff[u]!; ei < outOff[u + 1]!; ei++) {
+          const w = edgeTo[ei]!;
+          if (rank[w]! <= rankU) continue; // upward only
+          const nd = d + edgeW[ei]!;
+          if (nd < dF(w)) {
+            distF[w] = nd; stF[w] = ver; parF[w] = u; eFIdx[w] = ei;
+            hF.push(w, nd);
+          }
+        }
+      } else {
+        // Backward upward step from t. Iterates incoming edges to w (stored in
+        // revOff/revEi as out-edge indices), relaxing the source node s′ where
+        // rank[s′] > rank[w].
+        const d = hB.peekKey();
+        const w = hB.pop();
+        if (d > dB(w)) continue;
+        settled++;
+        const of = dF(w);
+        if (of < Infinity && d + of < mu) { mu = d + of; meet = w; }
+        const rankW = rank[w]!;
+        for (let k = revOff[w]!; k < revOff[w + 1]!; k++) {
+          const ei = revEi[k]!;
+          const s2 = edgeFrom[ei]!; // source of this out-edge s2→w
+          if (rank[s2]! <= rankW) continue; // upward only from w's perspective
+          const nd = d + edgeW[ei]!;
+          if (nd < dB(s2)) {
+            distB[s2] = nd; stB[s2] = ver; parB[s2] = w; eBIdx[s2] = ei;
+            hB.push(s2, nd);
+          }
         }
       }
     }
