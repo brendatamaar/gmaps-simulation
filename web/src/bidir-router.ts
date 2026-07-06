@@ -114,10 +114,18 @@ class BidirRouter {
         if (closedVerF[u] === ver) continue;
         closedVerF[u] = ver;
         settled++;
-        const gU = gFv(u), gBU = gBv(u);
-        if (stB[u] === ver && gU + gBU < mu) { mu = gU + gBU; meet = u; }
-        // prevNode for the incoming edge at u (for restriction check on departure)
+        // prevNode for the incoming edge at u — also the "from" side of the
+        // turn restriction check when u is a meet-node candidate below.
         const prevU = stF[u] === ver ? parF[u]! : -1;
+        const gU = gFv(u), gBU = gBv(u);
+        if (stB[u] === ver && gU + gBU < mu) {
+          // The joined path passes prevU -> u -> parB[u]; neither side's edge
+          // relaxation checks that specific turn, so verify it before accepting.
+          const nextU = parB[u]!;
+          if (!restrictions || !isForbidden(restrictions, prevU, u, nextU)) {
+            mu = gU + gBU; meet = u;
+          }
+        }
         for (let ei = offsets[u]!; ei < offsets[u + 1]!; ei++) {
           const v = targets[ei]!;
           if (restrictions && isForbidden(restrictions, prevU, u, v)) continue;
@@ -132,11 +140,17 @@ class BidirRouter {
         if (closedVerB[v] === ver) continue;
         closedVerB[v] = ver;
         settled++;
-        const gV = gBv(v), gFV = gFv(v);
-        if (stF[v] === ver && gFV + gV < mu) { mu = gFV + gV; meet = v; }
         // In the forward path: any predecessor u arrives at v, then continues to parB[v].
         // Check restriction u→v→parB[v] for each candidate predecessor u.
         const nextV = stB[v] === ver ? parB[v]! : -1;
+        const gV = gBv(v), gFV = gFv(v);
+        if (stF[v] === ver && gFV + gV < mu) {
+          // The joined path passes parF[v] -> v -> nextV; verify that turn too.
+          const prevV = parF[v]!;
+          if (!restrictions || !isForbidden(restrictions, prevV, v, nextV)) {
+            mu = gFV + gV; meet = v;
+          }
+        }
         for (let k = revOff[v]!; k < revOff[v + 1]!; k++) {
           const u = revSrc[k]!;
           if (restrictions && nextV >= 0 && isForbidden(restrictions, u, v, nextV)) continue;
