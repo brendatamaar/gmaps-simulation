@@ -90,8 +90,10 @@ function mergeShort(steps: Step[]): Step[] {
 }
 
 // Build the step list for a path. Steps accumulate distance until the next
-// maneuver; the final step is always "Arrive".
-export function buildDirections(graph: Graph, path: Int32Array): Step[] {
+// maneuver; the final step is always "Arrive". `edges` (when the router
+// provided them) gives the exact traversed edge per hop, so street names match
+// the traversed parallel edge; otherwise fall back to the cheapest edge.
+export function buildDirections(graph: Graph, path: Int32Array, edges: Int32Array | null = null): Step[] {
   if (path.length < 2) return [];
 
   // Per-segment name + bearing.
@@ -100,7 +102,7 @@ export function buildDirections(graph: Graph, path: Int32Array): Step[] {
   const segBearing = new Float64Array(m);
   for (let k = 0; k < m; k++) {
     const a = path[k]!, b = path[k + 1]!;
-    const ei = cheapestEdge(graph, a, b);
+    const ei = edges ? edges[k]! : cheapestEdge(graph, a, b);
     segName[k] = ei >= 0 ? streetName(graph, ei) : '';
     segBearing[k] = bearing(graph, a, b);
   }

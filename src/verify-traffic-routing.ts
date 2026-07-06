@@ -81,7 +81,7 @@ type WasmExports = {
   getPathPtr(): number;
   getPathLen(): number;
   getDistMeters(): number;
-  astar(startIdx: number, endIdx: number): number;
+  astar(startIdx: number, endIdx: number, hScale: number): number;
 };
 
 const rawWasm = await readFile(path.join(PUB, 'release.wasm')).catch(() => {
@@ -170,7 +170,7 @@ function runRoute(
   s: number, t: number, hour: number, trafficOn: boolean,
 ): { etaSec: number; pathKey: string } | null {
   fillWeights(weights, graph, model, hour, trafficOn, 'drive');
-  if (w.astar(s, t) !== 0) return null;
+  if (w.astar(s, t, 1.0) !== 0) return null;
   const len = w.getPathLen();
   const path = new Int32Array(w.memory.buffer, w.getPathPtr(), len).slice();
   return { etaSec: etaSeconds(w.getDistMeters()), pathKey: path.join(',') };

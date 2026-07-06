@@ -68,9 +68,9 @@ type WExports = {
   initGraph(n: number, e: number): void;
   getOffsetsPtr(): number; getTargetsPtr(): number; getDistPtr(): number;
   getLatsPtr(): number; getLonsPtr(): number;
-  getPathPtr(): number; getPathLen(): number;
-  getDistMeters(): number; getNodesVisited(): number;
-  astar(s: number, t: number): number;
+  getPathPtr(): number; getPathEdgesPtr(): number; getPathLen(): number;
+  getDistMeters(): number; getNodesVisited(): number; getVisitOrderPtr(): number;
+  astar(s: number, t: number, hScale: number): number;
 };
 const wasmBuf = await readFile(path.join(PUB, 'release.wasm'));
 const { instance } = await WebAssembly.instantiate(wasmBuf, {
@@ -88,14 +88,18 @@ const weights = new Float64Array(buf, w.getDistPtr(), e);
 const router: Router = {
   weights,
   restrictions: { viaCount: 0, pairCount: 0, viaNodes: new Int32Array(0), pairOffs: new Int32Array(0), pairs: new Int32Array(0) },
-  route(s, t) {
+  route(s, t, hScale = 1.0) {
     const t0 = performance.now();
-    const rc = w.astar(s, t);
+    const rc = w.astar(s, t, hScale);
     const queryMs = performance.now() - t0;
     if (rc !== 0) return null;
     const len = w.getPathLen();
     const p = new Int32Array(buf, w.getPathPtr(), len).slice();
-    return { path: p, cost: w.getDistMeters(), nodesVisited: w.getNodesVisited(), queryMs };
+    const edges = new Int32Array(buf, w.getPathEdgesPtr(), Math.max(0, len - 1)).slice();
+    return { path: p, edges, cost: w.getDistMeters(), nodesVisited: w.getNodesVisited(), queryMs };
+  },
+  lastVisitOrder() {
+    return new Int32Array(buf, w.getVisitOrderPtr(), w.getNodesVisited()).slice();
   },
 };
 

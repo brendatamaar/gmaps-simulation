@@ -3,7 +3,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 
 import { loadGraph, nearestNode, type Graph } from "./graph.ts";
 import {
-  initRouter, loadRestrictions, emptyRestrictions,
+  initRouter, loadRestrictions, emptyRestrictions, pathViolatesRestriction,
   type Router, type Restrictions,
 } from "./router.ts";
 import { applyRestrictionSplit } from "./restriction-split.ts";
@@ -162,7 +162,7 @@ function selectedFC() {
   const r = routes[selected];
   if (!r) return { type: "FeatureCollection" as const, features: [] };
   const colorByTraffic = mode === "drive" && trafficOn;
-  const segMult = segmentMultipliers(graph, model, r.path, hour, trafficOn, mode);
+  const segMult = segmentMultipliers(graph, model, r.path, hour, trafficOn, mode, r.edges);
   const features = [];
   for (let k = 1; k < r.path.length; k++) {
     const a = r.path[k - 1]!,
@@ -232,7 +232,7 @@ function renderCards() {
   host.innerHTML = "";
   const best = routes[0]?.etaSec ?? 0;
   routes.forEach((r, i) => {
-    const steps = buildDirections(graph, r.path);
+    const steps = buildDirections(graph, r.path, r.edges);
     const via = primaryRoad(steps);
     const card = document.createElement("div");
     const classes = ["route-card"];
@@ -347,6 +347,28 @@ function updateModeNote() {
   $("modenote").textContent = text;
 }
 
+// Single WASM A* query wrapped as a RouteOption. Assumes weights are already
+// filled for the desired scenario. Trims the synthetic arrival hop when the
+// destination is a restriction-split via node.
+function astarRouteOption(s: number, t: number, arrivalEnd: number | null): RouteOption | null {
+  const r = router.route(s, arrivalEnd ?? t, modeHScale(mode));
+  if (!r) return null;
+  let { path, edges } = r;
+  if (arrivalEnd !== null && path.length >= 2 && path[path.length - 1] === arrivalEnd) {
+    path = path.subarray(0, path.length - 1);
+    edges = edges.subarray(0, edges.length - 1);
+  }
+  if (path.length < 2) return null;
+  return {
+    path,
+    edges,
+    etaSec: etaSeconds(r.cost),
+    distanceM: pathDistanceMeters(graph, path, edges),
+    nodesVisited: r.nodesVisited,
+    queryMs: r.queryMs,
+  };
+}
+
 // Full search incl. alternatives. Used on commit events (new endpoint, mode,
 // traffic toggle, slider release).
 function recomputeFull() {
@@ -364,38 +386,51 @@ function recomputeFull() {
   }
 
   const useCH = mode === "drive" && !trafficOn && chRouter !== null;
+  const arrivalEnd = arrivalOf?.get(endIdx) ?? null;
 
   if (useCH) {
     const cr = chRouter!.query(startIdx, endIdx);
-    if (cr) {
-      const path = new Int32Array(cr.path);
+    // Run A* once (free-flow) — used both as the benchmark comparison and as
+    // the restriction-aware fallback below (CH contraction has no turn-
+    // restriction awareness; see ch.ts).
+    fillWeights(router.weights, graph, model, hour, false, "drive");
+    const ar = astarRouteOption(startIdx, endIdx, arrivalEnd);
+    lastAstar = ar ? { settled: ar.nodesVisited, queryMs: ar.queryMs } : null;
+
+    const chPath = cr ? new Int32Array(cr.path) : null;
+    const chBlocked = chPath !== null && pathViolatesRestriction(restrictionsData, chPath);
+    if (chPath && !chBlocked) {
       routes = [{
-        path,
-        etaSec: etaSeconds(cr.dist),
-        distanceM: pathDistanceMeters(graph, path),
-        nodesVisited: cr.settled,
-        queryMs: cr.queryMs,
+        path: chPath,
+        edges: null, // CH edge ids live in its own edge space
+        etaSec: etaSeconds(cr!.dist),
+        distanceM: pathDistanceMeters(graph, chPath),
+        nodesVisited: cr!.settled,
+        queryMs: cr!.queryMs,
       }];
-      lastCH = { settled: cr.settled, queryMs: cr.queryMs };
-      // Run A* once (free-flow) for benchmark comparison.
-      fillWeights(router.weights, graph, model, hour, false, "drive");
-      const ar = router.route(startIdx, endIdx);
-      lastAstar = ar ? { settled: ar.nodesVisited, queryMs: ar.queryMs } : null;
+      lastCH = { settled: cr!.settled, queryMs: cr!.queryMs };
+    } else if (ar) {
+      // CH crossed a forbidden turn (or found no path) — the A* result above
+      // already respects restrictions, so show that instead.
+      routes = [ar];
+      lastCH = null;
     } else {
       routes = [];
       lastCH = null;
-      lastAstar = null;
     }
   } else if (mode === "drive" && trafficOn && rev !== null) {
     lastCH = null;
-    routes = computeRoutesBidir(graph, rev, router.weights, altData, router.restrictions, model, startIdx, endIdx, hour, trafficOn, mode);
+    routes = computeRoutesBidir(
+      graph, rev, router.weights, altData, router.restrictions, model,
+      startIdx, endIdx, hour, trafficOn, mode, undefined, arrivalEnd,
+    );
     const r = routes[0];
     lastBidir = r ? { settled: r.nodesVisited, queryMs: r.queryMs } : null;
     lastAstar = null;
   } else {
     lastCH = null;
     lastBidir = null;
-    routes = computeRoutes(graph, router, model, startIdx, endIdx, hour, trafficOn, mode);
+    routes = computeRoutes(graph, router, model, startIdx, endIdx, hour, trafficOn, mode, arrivalEnd);
     const r = routes[0];
     lastAstar = r ? { settled: r.nodesVisited, queryMs: r.queryMs } : null;
   }
@@ -416,21 +451,29 @@ function recomputePrimary() {
   if (startIdx === null || endIdx === null) return;
 
   const useCH = mode === "drive" && !trafficOn && chRouter !== null;
+  const arrivalEnd = arrivalOf?.get(endIdx) ?? null;
 
   if (useCH) {
     const cr = chRouter!.query(startIdx, endIdx);
-    if (cr) {
-      const path = new Int32Array(cr.path);
+    const chPath = cr ? new Int32Array(cr.path) : null;
+    const chBlocked = chPath !== null && pathViolatesRestriction(restrictionsData, chPath);
+    if (chPath && !chBlocked) {
       routes = [{
-        path,
-        etaSec: etaSeconds(cr.dist),
-        distanceM: pathDistanceMeters(graph, path),
-        nodesVisited: cr.settled,
-        queryMs: cr.queryMs,
+        path: chPath,
+        edges: null,
+        etaSec: etaSeconds(cr!.dist),
+        distanceM: pathDistanceMeters(graph, chPath),
+        nodesVisited: cr!.settled,
+        queryMs: cr!.queryMs,
       }];
-      lastCH = { settled: cr.settled, queryMs: cr.queryMs };
+      lastCH = { settled: cr!.settled, queryMs: cr!.queryMs };
     } else {
-      routes = [];
+      // CH is restriction-unaware (see ch.ts) — fall back to A*, which respects
+      // turn restrictions, when the CH path crosses a forbidden turn.
+      fillWeights(router.weights, graph, model, hour, false, "drive");
+      const ar = astarRouteOption(startIdx, endIdx, arrivalEnd);
+      routes = ar ? [ar] : [];
+      lastCH = null;
     }
   } else if (mode === "drive" && trafficOn && rev !== null) {
     // Run all 3 penalty iterations (same as recomputeFull) so the fastest route
@@ -439,23 +482,15 @@ function recomputePrimary() {
     // raw-weight ordering and pathWeight re-score ordering disagree.
     const primary = computeRoutesBidir(
       graph, rev, router.weights, altData, router.restrictions, model,
-      startIdx, endIdx, hour, trafficOn, mode,
+      startIdx, endIdx, hour, trafficOn, mode, undefined, arrivalEnd,
     );
     routes = primary.length > 0 ? [primary[0]!] : [];
     const r0 = routes[0];
     if (r0) lastBidir = { settled: r0.nodesVisited, queryMs: r0.queryMs };
   } else {
     fillWeights(router.weights, graph, model, hour, trafficOn, mode);
-    const r = router.route(startIdx, endIdx, modeHScale(mode));
-    routes = r
-      ? [{
-          path: r.path,
-          etaSec: etaSeconds(r.cost),
-          distanceM: pathDistanceMeters(graph, r.path),
-          nodesVisited: r.nodesVisited,
-          queryMs: r.queryMs,
-        }]
-      : [];
+    const r = astarRouteOption(startIdx, endIdx, arrivalEnd);
+    routes = r ? [r] : [];
     if (r) lastAstar = { settled: r.nodesVisited, queryMs: r.queryMs };
   }
 

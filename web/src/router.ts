@@ -14,9 +14,11 @@ type WasmExports = {
   getLatsPtr(): number;
   getLonsPtr(): number;
   getPathPtr(): number;
+  getPathEdgesPtr(): number;
   getPathLen(): number;
   getDistMeters(): number;
   getNodesVisited(): number;
+  getVisitOrderPtr(): number;
   getRViaPtr(): number;
   getROffPtr(): number;
   getRPairPtr(): number;
@@ -97,6 +99,7 @@ export async function loadRestrictions(): Promise<Restrictions> {
 
 export type RouteResult = {
   path: Int32Array;      // node indices, start → end (copied out of WASM memory)
+  edges: Int32Array;     // [path.length-1] edge index actually traversed per hop
   cost: number;          // Σ edge weight (metres-equivalent; ÷MAX_SPEED ⇒ ETA seconds)
   nodesVisited: number;
   queryMs: number;
@@ -108,6 +111,9 @@ export type Router = {
   weights: Float64Array;
   restrictions: Restrictions;
   route(startIdx: number, endIdx: number, hScale?: number): RouteResult | null;
+  // Node settlement order from the most recent route() call. Copies out of
+  // WASM memory, so only call this when the trace is actually needed.
+  lastVisitOrder(): Int32Array;
 };
 
 // `restrictions` are uploaded into the WASM A*'s turn-restriction tables. When
@@ -159,7 +165,12 @@ export async function initRouter(graph: Graph, restrictions: Restrictions): Prom
       const len = w.getPathLen();
       // .slice() copies out of WASM memory into a JS-owned array.
       const path = new Int32Array(w.memory.buffer, w.getPathPtr(), len).slice();
-      return { path, cost: w.getDistMeters(), nodesVisited: w.getNodesVisited(), queryMs };
+      const edges = new Int32Array(w.memory.buffer, w.getPathEdgesPtr(), Math.max(0, len - 1)).slice();
+      return { path, edges, cost: w.getDistMeters(), nodesVisited: w.getNodesVisited(), queryMs };
+    },
+    lastVisitOrder() {
+      const len = w.getNodesVisited();
+      return new Int32Array(w.memory.buffer, w.getVisitOrderPtr(), len).slice();
     },
   };
 }

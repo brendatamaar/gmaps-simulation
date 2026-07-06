@@ -16,6 +16,7 @@ import { TypedMinHeap } from './typed-heap.ts';
 
 export type BidirResult = {
   path: Int32Array;
+  edges: Int32Array; // [path.length-1] edge index actually traversed per hop
   cost: number;
   settled: number;
   queryMs: number;
@@ -58,6 +59,8 @@ class BidirRouter {
   private gB:    Float64Array;
   private parF:  Int32Array;
   private parB:  Int32Array;
+  private eF:    Int32Array; // edge index used to reach the node (forward)
+  private eB:    Int32Array; // edge index node→parB[node] (backward)
   private stF:   Int32Array; // stamp: entry is valid iff stF[v] === ver
   private stB:   Int32Array;
   private closedVerF: Int32Array; // stF version when node was settled in forward search
@@ -71,6 +74,8 @@ class BidirRouter {
     this.gB         = new Float64Array(n);
     this.parF       = new Int32Array(n);
     this.parB       = new Int32Array(n);
+    this.eF         = new Int32Array(n);
+    this.eB         = new Int32Array(n);
     this.stF        = new Int32Array(n);
     this.stB        = new Int32Array(n);
     this.closedVerF = new Int32Array(n);
@@ -81,10 +86,10 @@ class BidirRouter {
     graph: Graph, rev: RevCSR, weights: Float64Array,
     alt: AltData | null, restrictions: Restrictions | null, s: number, t: number,
   ): BidirResult | null {
-    if (s === t) return { path: new Int32Array([s]), cost: 0, settled: 0, queryMs: 0 };
+    if (s === t) return { path: new Int32Array([s]), edges: new Int32Array(0), cost: 0, settled: 0, queryMs: 0 };
     const t0  = performance.now();
     const ver = ++this.ver;
-    const { gF, gB, parF, parB, stF, stB, closedVerF, closedVerB } = this;
+    const { gF, gB, parF, parB, eF, eB, stF, stB, closedVerF, closedVerB } = this;
     const { offsets, targets } = graph;
     const { revOff, revSrc, revEI } = rev;
 
@@ -137,7 +142,7 @@ class BidirRouter {
           if (restrictions && isForbidden(restrictions, prevU, u, v)) continue;
           const ng = gU + weights[ei]!;
           if (ng < gFv(v)) {
-            gF[v] = ng; stF[v] = ver; parF[v] = u;
+            gF[v] = ng; stF[v] = ver; parF[v] = u; eF[v] = ei;
             heapF.push(v, ng + hF(v));
           }
         }
@@ -162,7 +167,7 @@ class BidirRouter {
           if (restrictions && nextV >= 0 && isForbidden(restrictions, u, v, nextV)) continue;
           const ng = gV + weights[revEI[k]!]!;
           if (ng < gBv(u)) {
-            gB[u] = ng; stB[u] = ver; parB[u] = v;
+            gB[u] = ng; stB[u] = ver; parB[u] = v; eB[u] = revEI[k]!;
             heapB.push(u, ng + hB(u));
           }
         }
@@ -171,12 +176,15 @@ class BidirRouter {
 
     if (meet === -1) return null;
 
+    // eF[v] is the edge parF[v]→v; eB[v] is the edge v→parB[v]. Collect both
+    // node and edge chains so the result carries the exact edges traversed.
     const fwd: number[] = [meet];
-    for (let v = meet; parF[v]! !== -1; v = parF[v]!) fwd.push(parF[v]!);
-    fwd.reverse();
-    for (let v = meet; parB[v]! !== -1; v = parB[v]!) fwd.push(parB[v]!);
+    const eis: number[] = [];
+    for (let v = meet; parF[v]! !== -1; v = parF[v]!) { fwd.push(parF[v]!); eis.push(eF[v]!); }
+    fwd.reverse(); eis.reverse();
+    for (let v = meet; parB[v]! !== -1; v = parB[v]!) { fwd.push(parB[v]!); eis.push(eB[v]!); }
 
-    return { path: new Int32Array(fwd), cost: mu, settled, queryMs: performance.now() - t0 };
+    return { path: new Int32Array(fwd), edges: new Int32Array(eis), cost: mu, settled, queryMs: performance.now() - t0 };
   }
 }
 

@@ -215,48 +215,42 @@ export function fillWeights(
   }
 }
 
-// Σ true metres-equivalent weight along a path. Mirrors fillWeights logic.
+// Σ true metres-equivalent weight along a route's traversed edges. Mirrors
+// fillWeights logic. Takes the edge indices the router actually used (not the
+// node path) so parallel edges are scored exactly as traversed.
 export function pathWeight(
-  graph: Graph, model: TrafficModel, path: Int32Array,
+  graph: Graph, model: TrafficModel, edges: Int32Array,
   hour: number, trafficOn: boolean, mode: TravelMode,
 ): number {
   const { classes, distances } = graph;
   let sum = 0;
   if (mode === 'walk') {
-    for (let k = 1; k < path.length; k++) {
-      const ei = cheapestEdge(graph, path[k - 1]!, path[k]!);
-      if (ei >= 0) sum += distances[ei]! * WALK_STRETCH;
-    }
+    for (let k = 0; k < edges.length; k++) sum += distances[edges[k]!]! * WALK_STRETCH;
     return sum;
   }
   if (mode === 'bike') {
-    for (let k = 1; k < path.length; k++) {
-      const ei = cheapestEdge(graph, path[k - 1]!, path[k]!);
-      if (ei >= 0) sum += distances[ei]! * BIKE_STRETCH;
-    }
+    for (let k = 0; k < edges.length; k++) sum += distances[edges[k]!]! * BIKE_STRETCH;
     return sum;
   }
   if (!trafficOn) {
-    for (let k = 1; k < path.length; k++) {
-      const ei = cheapestEdge(graph, path[k - 1]!, path[k]!);
-      if (ei >= 0) sum += distances[ei]! * STRETCH[classes[ei]!]!;
+    for (let k = 0; k < edges.length; k++) {
+      const ei = edges[k]!;
+      sum += distances[ei]! * STRETCH[classes[ei]!]!;
     }
     return sum;
   }
   const { cbdFactor, edgeDot, staticMult } = model;
   const h = Math.floor(((hour % 24) + 24) % 24);
   if (cbdFactor && edgeDot) {
-    for (let k = 1; k < path.length; k++) {
-      const ei = cheapestEdge(graph, path[k - 1]!, path[k]!);
-      if (ei < 0) continue;
+    for (let k = 0; k < edges.length; k++) {
+      const ei = edges[k]!;
       const mult = bprEdgeMult(cbdFactor, edgeDot, ei, classes[ei]!, h);
       sum += distances[ei]! * STRETCH[classes[ei]!]! * mult;
     }
   } else {
     const byClass = classFactors(hour, true);
-    for (let k = 1; k < path.length; k++) {
-      const ei = cheapestEdge(graph, path[k - 1]!, path[k]!);
-      if (ei < 0) continue;
+    for (let k = 0; k < edges.length; k++) {
+      const ei = edges[k]!;
       sum += distances[ei]! * STRETCH[classes[ei]!]! * staticMult[ei]! * byClass[classes[ei]!]!;
     }
   }
@@ -292,9 +286,12 @@ export function congestionColor(mult: number): string {
 }
 
 // Per-segment congestion multiplier along a path, for colouring the route.
+// `edges` (when the router provided them) gives the exact traversed edge per
+// hop; otherwise fall back to the cheapest parallel edge per node pair.
 export function segmentMultipliers(
   graph: Graph, model: TrafficModel, path: Int32Array,
   hour: number, trafficOn: boolean, mode: TravelMode = 'drive',
+  edges: Int32Array | null = null,
 ): Float64Array {
   const out = new Float64Array(Math.max(0, path.length - 1));
   if (mode !== 'drive' || !trafficOn) { out.fill(1); return out; }
@@ -303,12 +300,12 @@ export function segmentMultipliers(
   const h = Math.floor(((hour % 24) + 24) % 24);
   if (cbdFactor && edgeDot) {
     for (let k = 1; k < path.length; k++) {
-      const ei  = cheapestEdge(graph, path[k - 1]!, path[k]!);
+      const ei  = edges ? edges[k - 1]! : cheapestEdge(graph, path[k - 1]!, path[k]!);
       out[k - 1] = ei >= 0 ? bprEdgeMult(cbdFactor, edgeDot, ei, classes[ei]!, h) : 1;
     }
   } else {
     for (let k = 1; k < path.length; k++) {
-      const ei  = cheapestEdge(graph, path[k - 1]!, path[k]!);
+      const ei  = edges ? edges[k - 1]! : cheapestEdge(graph, path[k - 1]!, path[k]!);
       const cls = ei >= 0 ? classes[ei]! : 5;
       out[k - 1] = congestionMultiplier(hour, cls);
     }
@@ -344,11 +341,21 @@ export function arrivalClock(departHour: number, seconds: number): string {
   return formatClock(departHour + seconds / 3600);
 }
 
-export function pathDistanceMeters(graph: Graph, path: Int32Array): number {
+// Route length in metres. Prefers the stored per-edge road lengths (which
+// include way geometry between graph nodes) over node-to-node haversine,
+// which under-reports on curved roads. Falls back to haversine only for hops
+// with no matching edge (e.g. CH paths whose node pair was retargeted by the
+// restriction split).
+export function pathDistanceMeters(graph: Graph, path: Int32Array, edges: Int32Array | null = null): number {
   let m = 0;
   for (let k = 1; k < path.length; k++) {
-    const a = path[k - 1]!, b = path[k]!;
-    m += haversine(graph.lats[a]!, graph.lons[a]!, graph.lats[b]!, graph.lons[b]!);
+    const ei = edges ? edges[k - 1]! : cheapestEdge(graph, path[k - 1]!, path[k]!);
+    if (ei >= 0) {
+      m += graph.distances[ei]!;
+    } else {
+      const a = path[k - 1]!, b = path[k]!;
+      m += haversine(graph.lats[a]!, graph.lons[a]!, graph.lats[b]!, graph.lons[b]!);
+    }
   }
   return m;
 }
