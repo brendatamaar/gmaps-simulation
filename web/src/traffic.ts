@@ -134,6 +134,22 @@ function classFactors(hour: number, trafficOn: boolean): Float64Array {
 
 // ── Weight computation ────────────────────────────────────────
 
+// Cache key capturing everything fillWeights' output actually depends on: walk/
+// bike ignore hour and traffic entirely; drive+trafficOff ignores hour; only
+// drive+trafficOn depends on the (floored) hour and whether the BPR worker has
+// delivered cbdFactor/edgeDot yet. Keyed per output buffer (there's one router
+// weights buffer per graph) so repeated calls with an unchanged key — e.g. every
+// requestAnimationFrame while dragging the hour slider in walk mode, or between
+// sub-integer hour ticks in drive mode — can skip the O(E) rewrite below.
+function weightsKey(model: TrafficModel, hour: number, trafficOn: boolean, mode: TravelMode): string {
+  if (mode !== 'drive') return mode;
+  if (!trafficOn) return 'drive:off';
+  const h = Math.floor(((hour % 24) + 24) % 24);
+  return `drive:on:${h}:${model.cbdFactor !== null}`;
+}
+
+const lastFillKey = new WeakMap<Float64Array, string>();
+
 // Write the live weights straight into `out` (a view over WASM linear memory).
 //
 // Drive mode — two sub-paths:
@@ -146,6 +162,9 @@ export function fillWeights(
   out: Float64Array, graph: Graph, model: TrafficModel,
   hour: number, trafficOn: boolean, mode: TravelMode = 'drive',
 ): void {
+  const key = weightsKey(model, hour, trafficOn, mode);
+  if (lastFillKey.get(out) === key) return;
+  lastFillKey.set(out, key);
   const { e, classes, distances } = graph;
   if (mode === 'walk') {
     for (let i = 0; i < e; i++) out[i] = distances[i]! * WALK_STRETCH;

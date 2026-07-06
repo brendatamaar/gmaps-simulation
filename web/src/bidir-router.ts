@@ -183,12 +183,18 @@ class BidirRouter {
   }
 }
 
-let _router: BidirRouter | null = null;
+// Keyed by graph (like graph.ts's _bestClassCache) so scratch arrays are
+// correctly resized if a new graph — e.g. after a restriction-split rebuild —
+// replaces the one bidirRoute was first called with. A module-level singleton
+// sized for the first graph would silently read/write out of bounds once a
+// larger graph came along.
+const _routers = new WeakMap<Graph, BidirRouter>();
 
 export function bidirRoute(
   graph: Graph, rev: RevCSR, weights: Float64Array,
   alt: AltData | null, restrictions: Restrictions | null, s: number, t: number,
 ): BidirResult | null {
-  if (!_router) _router = new BidirRouter(graph.n);
-  return _router.query(graph, rev, weights, alt, restrictions, s, t);
+  let router = _routers.get(graph);
+  if (!router) { router = new BidirRouter(graph.n); _routers.set(graph, router); }
+  return router.query(graph, rev, weights, alt, restrictions, s, t);
 }

@@ -89,40 +89,149 @@ function getBestClass(graph: Graph): Uint8Array {
   return cache;
 }
 
+// Uniform lat/lon grid over the routable (largest-SCC) nodes, built once per
+// Graph. Turns nearestNode's O(N) scan into an expanding-ring lookup over a
+// few grid cells. CSR-style buckets: nodes of cell c are
+// items[cellStart[c]..cellStart[c+1]).
+type GridIndex = {
+  minLat: number; minLon: number;
+  invCellLat: number; invCellLon: number; // 1 / cell span, degrees
+  cellLat: number; cellLon: number;
+  rows: number; cols: number;
+  cellStart: Int32Array;
+  items: Int32Array;
+};
+
+const GRID_DIM = 256; // 256×256 ≈ 14 nodes/cell at 915k nodes
+
+const _gridCache = new WeakMap<Graph, GridIndex>();
+
+function getGrid(graph: Graph): GridIndex {
+  let grid = _gridCache.get(graph);
+  if (grid) return grid;
+  const { n, lats, lons, scc } = graph;
+
+  let hasScc = false;
+  for (let i = 0; i < n; i++) if (scc[i]) { hasScc = true; break; }
+  // scc all-zero would previously make nearestNode recurse forever; index all
+  // nodes instead so lookups still terminate.
+  const use = (i: number) => hasScc ? scc[i]! !== 0 : true;
+
+  // Bounds from the indexed nodes themselves (graph.bounds may be stale).
+  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+  let count = 0;
+  for (let i = 0; i < n; i++) {
+    if (!use(i)) continue;
+    count++;
+    const la = lats[i]!, lo = lons[i]!;
+    if (la < minLat) minLat = la;
+    if (la > maxLat) maxLat = la;
+    if (lo < minLon) minLon = lo;
+    if (lo > maxLon) maxLon = lo;
+  }
+  const rows = GRID_DIM, cols = GRID_DIM;
+  // Epsilon keeps the max-coordinate node inside the last cell.
+  const cellLat = Math.max((maxLat - minLat) / rows, 1e-9) * (1 + 1e-12);
+  const cellLon = Math.max((maxLon - minLon) / cols, 1e-9) * (1 + 1e-12);
+
+  const cellOf = (i: number) => {
+    const r = Math.min(rows - 1, Math.floor((lats[i]! - minLat) / cellLat));
+    const c = Math.min(cols - 1, Math.floor((lons[i]! - minLon) / cellLon));
+    return r * cols + c;
+  };
+
+  const cellStart = new Int32Array(rows * cols + 1);
+  for (let i = 0; i < n; i++) if (use(i)) cellStart[cellOf(i) + 1]++;
+  for (let c = 0; c < rows * cols; c++) cellStart[c + 1] += cellStart[c]!;
+  const items = new Int32Array(count);
+  const fill = cellStart.slice(0, rows * cols);
+  for (let i = 0; i < n; i++) if (use(i)) items[fill[cellOf(i)]!++] = i;
+
+  grid = {
+    minLat, minLon,
+    invCellLat: 1 / cellLat, invCellLon: 1 / cellLon,
+    cellLat, cellLon, rows, cols, cellStart, items,
+  };
+  _gridCache.set(graph, grid);
+  return grid;
+}
+
+// Nearest indexed node accepted by `accept`, by expanding square rings of grid
+// cells. After finishing ring r, any node in ring r+1 or beyond is at least
+// r*minSpan away, so the search stops as soon as the best hit beats that bound.
+function gridNearest(
+  grid: GridIndex, graph: Graph, lat: number, lon: number,
+  accept: ((i: number) => boolean) | null,
+): number {
+  const { minLat, minLon, cellLat, cellLon, rows, cols, cellStart, items } = grid;
+  const { lats, lons } = graph;
+  const cosLat = Math.cos((lat * Math.PI) / 180);
+  const minSpan = Math.min(cellLat, cellLon * cosLat);
+
+  const r0 = Math.min(rows - 1, Math.max(0, Math.floor((lat - minLat) / cellLat)));
+  const c0 = Math.min(cols - 1, Math.max(0, Math.floor((lon - minLon) / cellLon)));
+
+  let best = -1, bestD = Infinity;
+  const maxRing = Math.max(rows, cols);
+
+  const scanCell = (r: number, c: number): void => {
+    if (r < 0 || r >= rows || c < 0 || c >= cols) return;
+    const cell = r * cols + c;
+    for (let k = cellStart[cell]!; k < cellStart[cell + 1]!; k++) {
+      const i = items[k]!;
+      if (accept && !accept(i)) continue;
+      const dLat = lats[i]! - lat;
+      const dLon = (lons[i]! - lon) * cosLat;
+      const d = dLat * dLat + dLon * dLon;
+      if (d < bestD) { bestD = d; best = i; }
+    }
+  };
+
+  for (let ring = 0; ring <= maxRing; ring++) {
+    // A node in ring `ring` lies in a cell whose nearest edge is at least
+    // (ring-1) cells from the query cell — stop once that bound beats bestD.
+    if (best >= 0) {
+      const bound = (ring - 1) * minSpan;
+      if (bound > 0 && bestD <= bound * bound) break;
+    }
+    if (ring === 0) {
+      scanCell(r0, c0);
+      continue;
+    }
+    for (let c = c0 - ring; c <= c0 + ring; c++) {
+      scanCell(r0 - ring, c);
+      scanCell(r0 + ring, c);
+    }
+    for (let r = r0 - ring + 1; r <= r0 + ring - 1; r++) {
+      scanCell(r, c0 - ring);
+      scanCell(r, c0 + ring);
+    }
+  }
+  return best;
+}
+
 // Nearest graph node to a lat/lng, restricted to the largest SCC.
 //
 // maxClass (optional): only consider nodes that have at least one outgoing edge
 // of class ≤ maxClass. Use 3 (secondary) for drive-mode snapping so the origin/
 // destination lands on a real arterial rather than a mall access or service road,
 // which can otherwise add 1-2 km of detour before the router reaches the main
-// corridor. Falls back to unrestricted search if no qualifying node is found.
+// corridor. Prefers intersection nodes (out-degree ≥ 2) so we never start a
+// route on a one-way stub, then falls back to any arterial node, then to an
+// unrestricted search — same preference order as the old linear scan.
 export function nearestNode(graph: Graph, lat: number, lon: number, maxClass = 7): number {
-  const { n, lats, lons, scc, offsets } = graph;
-  const bestClass = maxClass < 7 ? getBestClass(graph) : null;
-  const cosLat = Math.cos((lat * Math.PI) / 180);
-
-  // For drive-mode snapping (maxClass < 7) prefer intersection nodes (out-degree ≥ 2)
-  // so we never start a route on a one-way stub that forces the router to first travel
-  // in the wrong direction before reaching the arterial network.
-  let best = -1;       // nearest arterial node with out-degree ≥ 2
-  let bestD = Infinity;
-  let bestAny = -1;    // nearest arterial node of any degree (fallback)
-  let bestAnyD = Infinity;
-
-  for (let i = 0; i < n; i++) {
-    if (!scc[i]) continue;
-    if (bestClass && bestClass[i]! > maxClass) continue;
-    const dLat = lats[i]! - lat;
-    const dLon = (lons[i]! - lon) * cosLat;
-    const d = dLat * dLat + dLon * dLon;
-    if (d < bestAnyD) { bestAnyD = d; bestAny = i; }
-    if (maxClass < 7 && offsets[i + 1]! - offsets[i]! < 2) continue;
-    if (d < bestD) { bestD = d; best = i; }
+  const grid = getGrid(graph);
+  const { offsets } = graph;
+  if (maxClass < 7) {
+    const bestClass = getBestClass(graph);
+    const arterialJunction = (i: number) =>
+      bestClass[i]! <= maxClass && offsets[i + 1]! - offsets[i]! >= 2;
+    const hit = gridNearest(grid, graph, lat, lon, arterialJunction);
+    if (hit >= 0) return hit;
+    const anyArterial = gridNearest(grid, graph, lat, lon, (i) => bestClass[i]! <= maxClass);
+    if (anyArterial >= 0) return anyArterial;
   }
-
-  if (best >= 0) return best;
-  if (bestAny >= 0) return bestAny;
-  return nearestNode(graph, lat, lon); // final fallback: unrestricted
+  return gridNearest(grid, graph, lat, lon, null);
 }
 
 // Index of the cheapest edge a->b (parallel edges are rare), or -1 if none.
