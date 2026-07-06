@@ -2,7 +2,11 @@ import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
 import { loadGraph, nearestNode, type Graph } from "./graph.ts";
-import { initRouter, type Router } from "./router.ts";
+import {
+  initRouter, loadRestrictions, emptyRestrictions,
+  type Router, type Restrictions,
+} from "./router.ts";
+import { applyRestrictionSplit } from "./restriction-split.ts";
 import { computeRoutes, computeRoutesBidir, type RouteOption } from "./routing.ts";
 import { buildRevCSR, type RevCSR } from "./bidir-router.ts";
 import { loadAlt, type AltData } from "./alt.ts";
@@ -53,6 +57,15 @@ let chData: CHData | null = null;
 let chRouter: CHRouter | null = null;
 let altData: AltData | null = null;
 let rev: RevCSR | null = null;
+// Original turn-restriction triples — used only to validate CH paths (CH is
+// restriction-unaware). The routing graph itself has restrictions baked in
+// topologically by applyRestrictionSplit, so the A*/bidir routers get an
+// empty restriction table.
+let restrictionsData: Restrictions = emptyRestrictions();
+// When the destination is a restricted via node, route to its arrival node
+// instead (see restriction-split.ts). Null when no restrictions are loaded.
+let arrivalOf: Map<number, number> | null = null;
+let altRemap: Int32Array | null = null;
 // Last query stats for the mode note display.
 let lastCH: { settled: number; queryMs: number } | null = null;
 let lastAstar: { settled: number; queryMs: number } | null = null;
@@ -825,13 +838,27 @@ function wireControls() {
 async function boot() {
   setHint("Loading graph…");
   graph = await loadGraph();
-  router = await initRouter(graph);
+  // Node count of the as-exported graph — alt.bin/ch.bin are indexed by it
+  // (the restriction split below appends nodes, so graph.n moves past it).
+  const exportedN = graph.n;
+  restrictionsData = await loadRestrictions();
+  // Bake turn restrictions into the topology: node-based A*/bidir searches are
+  // then exactly correct without any restriction checks in their hot loops.
+  const split = applyRestrictionSplit(graph, restrictionsData);
+  if (split) {
+    graph = split.graph;
+    arrivalOf = split.arrivalOf;
+    altRemap = split.altRemap;
+    console.log(`[boot] restriction split: ${restrictionsData.viaCount} vias baked in (${graph.n.toLocaleString()} nodes, ${graph.e.toLocaleString()} edges)`);
+  }
+  router = await initRouter(graph, split ? emptyRestrictions() : restrictionsData);
   model = precompute(graph);
   rev = buildRevCSR(graph);
   initOverlayEdges();
 
-  loadAlt().then(a => {
+  loadAlt(exportedN).then(a => {
     if (!a) return;
+    a.remap = altRemap;
     altData = a;
     console.log(`[boot] ALT ready: ${a.L} landmarks`);
     updateModeNote();
@@ -840,7 +867,7 @@ async function boot() {
 
   // Load CH precomputed graph in the background — once ready, drive+trafficOff
   // queries switch from A* to CH automatically.
-  loadCH().then(ch => {
+  loadCH(exportedN).then(ch => {
     if (!ch) return;
     chData   = ch;
     chRouter = new CHRouter(ch);

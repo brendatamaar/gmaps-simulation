@@ -62,6 +62,7 @@ const graph: Graph = {
   offsets, targets, distances, classes, nameIds,
   names: [],  // not needed for routing
   lats: nodeLats, lons: nodeLons,
+  scc: new Uint8Array(n).fill(1), // not needed headlessly; treat all nodes as routable
   bounds: { minLat: -6.4, maxLat: -6.05, minLng: 106.65, maxLng: 107.0 },
 };
 

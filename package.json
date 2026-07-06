@@ -17,6 +17,7 @@
     "verify:traffic-data": "node --import ./node_modules/tsx/dist/esm/index.cjs src/verify-traffic-data.ts",
     "inspect:traffic": "node --import ./node_modules/tsx/dist/esm/index.cjs src/inspect-traffic.ts",
     "verify:traffic-routing": "node --import ./node_modules/tsx/dist/esm/index.cjs src/verify-traffic-routing.ts",
+    "verify:restrictions": "node --import ./node_modules/tsx/dist/esm/index.cjs src/verify-restrictions.ts",
     "dev:web": "vite",
     "build:web": "vite build",
     "preview:web": "vite preview"

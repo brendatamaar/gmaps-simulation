@@ -45,6 +45,7 @@ const graph: Graph = {
   names,
   lats: new Float64Array(ab, offLats, n),
   lons: new Float64Array(ab, offLons, n),
+  scc: new Uint8Array(n).fill(1), // not needed headlessly; treat all nodes as routable
   bounds: meta.bounds,
 };
 console.log(`Loaded graph.bin v${version}: ${n.toLocaleString()} nodes, ${e.toLocaleString()} edges, ${names.length.toLocaleString()} names`);

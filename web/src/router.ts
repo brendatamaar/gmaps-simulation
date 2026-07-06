@@ -110,7 +110,10 @@ export type Router = {
   route(startIdx: number, endIdx: number, hScale?: number): RouteResult | null;
 };
 
-export async function initRouter(graph: Graph): Promise<Router> {
+// `restrictions` are uploaded into the WASM A*'s turn-restriction tables. When
+// the graph has already had restrictions baked in topologically (see
+// restriction-split.ts), pass emptyRestrictions() so the runtime check is inert.
+export async function initRouter(graph: Graph, restrictions: Restrictions): Promise<Router> {
   // AssemblyScript's NativeMath compiles to imports from the `Math` namespace,
   // plus env.abort. Cast: the DOM `Imports` type doesn't model the `Math` object.
   const importObject = {
@@ -122,10 +125,7 @@ export async function initRouter(graph: Graph): Promise<Router> {
     Math,
   } as unknown as WebAssembly.Imports;
 
-  const [wasmRes, restrictions] = await Promise.all([
-    fetch('release.wasm'),
-    loadRestrictions(),
-  ]);
+  const wasmRes = await fetch('release.wasm');
   const { instance } = await WebAssembly.instantiate(await wasmRes.arrayBuffer(), importObject);
   const w = instance.exports as unknown as WasmExports;
 

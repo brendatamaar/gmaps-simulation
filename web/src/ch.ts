@@ -30,7 +30,10 @@ export type CHQueryResult = {
   queryMs: number;
 };
 
-export async function loadCH(): Promise<CHData | null> {
+// expectedN: node count of the graph the CH node ids must match (the
+// pre-split graph.bin n). A stale ch.bin routes between the wrong nodes
+// entirely, so reject it outright.
+export async function loadCH(expectedN: number): Promise<CHData | null> {
   try {
     const resp = await fetch('ch.bin');
     if (!resp.ok) {
@@ -44,6 +47,10 @@ export async function loadCH(): Promise<CHData | null> {
     const E   = hdr[2]!;
     const ver = hdr[3]!;
     if (ver < 1) throw new Error('ch.bin version too old — re-run pnpm export:ch');
+    if (n !== expectedN) {
+      console.warn(`[ch] ch.bin is stale: built for ${n.toLocaleString()} nodes, graph has ${expectedN.toLocaleString()} — re-run pnpm export:ch. CH disabled.`);
+      return null;
+    }
 
     const offRank   = 16;
     const offOutOff = offRank   + 4 * n;
