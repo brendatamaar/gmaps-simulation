@@ -14,6 +14,7 @@ import {
 } from './traffic.ts';
 import { bidirRoute, type RevCSR } from './bidir-router.ts';
 import type { AltData } from './alt.ts';
+import type { SearchTrace } from './search-trace.ts';
 
 export type RouteOption = {
   path: Int32Array;
@@ -71,110 +72,151 @@ function trimArrival(
   return { path, edges };
 }
 
+export type RouteSearchResult = {
+  options: RouteOption[];
+  // Settlement-order trace of the winning (first, un-penalized) search, or
+  // null if not requested. Used to drive the search-animation replay.
+  trace: SearchTrace | null;
+  // Node where the forward and backward searches met (bidirectional only).
+  meetNode: number | null;
+};
+
+// Sort by a composite key — (rounded-minute, distance, exact ETA) — rather
+// than a pairwise "same displayed minute ⇒ compare distance" comparator.
+// The pairwise version isn't transitive (A ties B, B ties C, but A and C can
+// differ), which Array.sort doesn't guarantee correct results for; a plain
+// composite key is a genuine total order regardless of how many candidates
+// there are, at no extra cost.
+function sortOptions(options: RouteOption[]): void {
+  options.sort((a, b) => {
+    const ra = Math.round(a.etaSec / 60), rb = Math.round(b.etaSec / 60);
+    if (ra !== rb) return ra - rb;
+    if (a.distanceM !== b.distanceM) return a.distanceM - b.distanceM;
+    return a.etaSec - b.etaSec;
+  });
+}
+
+// One search attempt from a penalty-method iteration. `edges` must always be
+// present (even if empty) since trimArrival/pathWeight/etc. index into it;
+// `trace`/`meet` are only meaningful on the first iteration and are only
+// checked when defined, so callers that don't support tracing simply omit them.
+type SearchStep = {
+  path: Int32Array;
+  edges: Int32Array;
+  nodesVisited: number;
+  queryMs: number;
+  trace?: SearchTrace | null;
+  meet?: number | null;
+} | null;
+
+// Shared penalty-method loop: run `routeOnce` up to `maxRoutes` times,
+// inflating each accepted route's edges before the next call so later calls
+// are pushed onto different corridors, then re-score every candidate with the
+// true (un-penalized) weights. `routeOnce(i)` must itself apply any pending
+// penalty from the previous iteration (i.e. read `weights` fresh each call) —
+// this function only decides *when* to penalize and *how much* to restore.
+function runPenaltyLoop(
+  graph: Graph, model: TrafficModel, weights: Float64Array,
+  hour: number, trafficOn: boolean, mode: TravelMode,
+  arrivalEnd: number | null, maxRoutes: number,
+  routeOnce: (i: number) => SearchStep,
+): RouteSearchResult {
+  const seen = new Set<string>();
+  const options: RouteOption[] = [];
+  const snapshot = new Map<number, number>(); // original weights before penalization
+  const acceptedEdges = new Set<number>();    // edges on already-accepted routes
+  let trace: SearchTrace | null = null;
+  let meetNode: number | null = null;
+
+  try {
+    for (let i = 0; i < maxRoutes; i++) {
+      const r = routeOnce(i);
+      if (!r) break;
+      if (i === 0) {
+        if (r.trace !== undefined) trace = r.trace;
+        if (r.meet !== undefined) meetNode = r.meet;
+      }
+      const { path, edges } = trimArrival(r.path, r.edges, arrivalEnd);
+      if (path.length < 2) break;
+      const sig = signature(path);
+      if (!seen.has(sig) && overlapFraction(graph, edges, acceptedEdges) <= OVERLAP_THRESHOLD) {
+        seen.add(sig);
+        const trueCost = pathWeight(graph, model, edges, hour, trafficOn, mode);
+        options.push({
+          path,
+          edges,
+          etaSec: etaSeconds(trueCost),
+          distanceM: pathDistanceMeters(graph, path, edges),
+          nodesVisited: r.nodesVisited,
+          queryMs: r.queryMs,
+        });
+        for (let k = 0; k < edges.length; k++) acceptedEdges.add(edges[k]!);
+      }
+      if (i < maxRoutes - 1) penalizeSnapshot(weights, edges, snapshot);
+    }
+  } finally {
+    // Restore only penalized edges — O(path edges) instead of O(all 1.8 M edges).
+    for (const [ei, w] of snapshot) weights[ei] = w;
+  }
+
+  sortOptions(options);
+  const best = options[0];
+  return {
+    options: best ? options.filter((o) => o.etaSec <= best.etaSec * MAX_RATIO) : [],
+    trace,
+    meetNode,
+  };
+}
+
 // Returns 1 to MAX_ROUTES options, fastest first. The WASM weight buffer is left
 // holding the clean live weights for the given (hour, trafficOn, mode).
 // arrivalEnd: routing target override when `end` is a restriction-split via.
 export function computeRoutes(
   graph: Graph, router: Router, model: TrafficModel,
   start: number, end: number, hour: number, trafficOn: boolean, mode: TravelMode,
+  wantTrace = false,
   arrivalEnd: number | null = null,
-): RouteOption[] {
+): RouteSearchResult {
   fillWeights(router.weights, graph, model, hour, trafficOn, mode);
   const target = arrivalEnd ?? end;
   const hScale = modeHScale(mode);
 
-  const seen = new Set<string>();
-  const options: RouteOption[] = [];
-  const snapshot = new Map<number, number>(); // original weights before penalization
-  const acceptedEdges = new Set<number>();    // edges on already-accepted routes
-
-  for (let i = 0; i < MAX_ROUTES; i++) {
-    const r = router.route(start, target, hScale);
-    if (!r) break;
-    const { path, edges } = trimArrival(r.path, r.edges, arrivalEnd);
-    if (path.length < 2) break;
-    const sig = signature(path);
-    if (!seen.has(sig) && overlapFraction(graph, edges, acceptedEdges) <= OVERLAP_THRESHOLD) {
-      seen.add(sig);
-      const trueCost = pathWeight(graph, model, edges, hour, trafficOn, mode);
-      options.push({
-        path,
-        edges,
-        etaSec: etaSeconds(trueCost),
-        distanceM: pathDistanceMeters(graph, path, edges),
-        nodesVisited: r.nodesVisited,
-        queryMs: r.queryMs,
-      });
-      for (let k = 0; k < edges.length; k++) acceptedEdges.add(edges[k]!);
-    }
-    if (i < MAX_ROUTES - 1) penalizeSnapshot(router.weights, edges, snapshot);
-  }
-
-  // Restore only penalized edges — O(path edges) instead of O(all 1.8 M edges).
-  for (const [ei, w] of snapshot) router.weights[ei] = w;
-
-  // Primary sort: ETA. Tiebreaker: when both routes round to the same displayed
-// minute, prefer the shorter distance so the more direct route comes first.
-options.sort((a, b) =>
-  Math.round(a.etaSec / 60) === Math.round(b.etaSec / 60)
-    ? a.distanceM - b.distanceM
-    : a.etaSec - b.etaSec,
-);
-  const best = options[0];
-  return best ? options.filter((o) => o.etaSec <= best.etaSec * MAX_RATIO) : [];
+  return runPenaltyLoop(
+    graph, model, router.weights, hour, trafficOn, mode, arrivalEnd, MAX_ROUTES,
+    (i) => {
+      const r = router.route(start, target, hScale);
+      if (!r) return null;
+      let trace: SearchTrace | undefined;
+      if (i === 0 && wantTrace) {
+        const order = router.lastVisitOrder();
+        trace = { order, side: new Uint8Array(order.length) };
+      }
+      return { path: r.path, edges: r.edges, nodesVisited: r.nodesVisited, queryMs: r.queryMs, trace };
+    },
+  );
 }
 
 // Same as computeRoutes but uses bidirectional A* + ALT instead of WASM A*.
 // Used for drive + traffic ON queries.
 // maxRoutes (default MAX_ROUTES): cap the penalty iterations. Pass 2 for the live
 // drag path (one primary + one penalty check) to halve the bidir A* call count.
-// arrivalEnd: routing target override when `end` is a restriction-split via.
 export function computeRoutesBidir(
   graph: Graph, rev: RevCSR, weights: Float64Array,
   alt: AltData | null, restrictions: Restrictions | null, model: TrafficModel,
   start: number, end: number, hour: number, trafficOn: boolean, mode: TravelMode,
   maxRoutes = MAX_ROUTES,
+  wantTrace = false,
   arrivalEnd: number | null = null,
-): RouteOption[] {
+): RouteSearchResult {
   fillWeights(weights, graph, model, hour, trafficOn, mode);
   const target = arrivalEnd ?? end;
 
-  const seen = new Set<string>();
-  const options: RouteOption[] = [];
-  const snapshot = new Map<number, number>();
-  const acceptedEdges = new Set<number>();
-
-  for (let i = 0; i < maxRoutes; i++) {
-    const br = bidirRoute(graph, rev, weights, alt, restrictions, start, target);
-    if (!br) break;
-    const { path, edges } = trimArrival(br.path, br.edges, arrivalEnd);
-    if (path.length < 2) break;
-    const sig = signature(path);
-    if (!seen.has(sig) && overlapFraction(graph, edges, acceptedEdges) <= OVERLAP_THRESHOLD) {
-      seen.add(sig);
-      const trueCost = pathWeight(graph, model, edges, hour, trafficOn, mode);
-      options.push({
-        path,
-        edges,
-        etaSec: etaSeconds(trueCost),
-        distanceM: pathDistanceMeters(graph, path, edges),
-        nodesVisited: br.settled,
-        queryMs: br.queryMs,
-      });
-      for (let k = 0; k < edges.length; k++) acceptedEdges.add(edges[k]!);
-    }
-    if (i < maxRoutes - 1) penalizeSnapshot(weights, edges, snapshot);
-  }
-
-  for (const [ei, w] of snapshot) weights[ei] = w;
-
-  // Primary sort: ETA. Tiebreaker: when both routes round to the same displayed
-// minute, prefer the shorter distance so the more direct route comes first.
-options.sort((a, b) =>
-  Math.round(a.etaSec / 60) === Math.round(b.etaSec / 60)
-    ? a.distanceM - b.distanceM
-    : a.etaSec - b.etaSec,
-);
-  const best = options[0];
-  return best ? options.filter((o) => o.etaSec <= best.etaSec * MAX_RATIO) : [];
+  return runPenaltyLoop(
+    graph, model, weights, hour, trafficOn, mode, arrivalEnd, maxRoutes,
+    (i) => {
+      const br = bidirRoute(graph, rev, weights, alt, restrictions, start, target, wantTrace && i === 0);
+      if (!br) return null;
+      return { path: br.path, edges: br.edges, nodesVisited: br.settled, queryMs: br.queryMs, trace: br.trace, meet: br.meet };
+    },
+  );
 }

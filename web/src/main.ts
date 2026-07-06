@@ -9,6 +9,7 @@ import {
 import { applyRestrictionSplit } from "./restriction-split.ts";
 import { computeRoutes, computeRoutesBidir, type RouteOption } from "./routing.ts";
 import { buildRevCSR, type RevCSR } from "./bidir-router.ts";
+import type { SearchTrace } from "./search-trace.ts";
 import { loadAlt, type AltData } from "./alt.ts";
 import {
   buildDirections,
@@ -45,6 +46,20 @@ import { loadCH, CHRouter, type CHData } from "./ch.ts";
 // Light, label-rich CARTO Positron vector basemap: keyless, Google-ish tone.
 const BASEMAP_STYLE =
   "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
+// Raster fallback (different host) used if the vector style above is
+// unreachable — e.g. basemaps.cartocdn.com times out on some networks.
+const BASEMAP_STYLE_FALLBACK = {
+  version: 8,
+  sources: {
+    osm: {
+      type: "raster",
+      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      tileSize: 256,
+      attribution: "© OpenStreetMap contributors",
+    },
+  },
+  layers: [{ id: "osm", type: "raster", source: "osm" }],
+} as const;
 const BLUE = "#1a73e8";
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -87,6 +102,9 @@ let startLabel: string | null = null;
 let endLabel: string | null = null;
 let routes: RouteOption[] = [];
 let selected = 0;
+let lastTrace: SearchTrace | null = null;
+let lastMeetNode: number | null = null;
+let animFrameId: number | null = null;
 
 let mode: TravelMode = "drive";
 let hour = 8;
@@ -158,19 +176,25 @@ function altsFC() {
   return { type: "FeatureCollection" as const, features: features as object[] };
 }
 
-function selectedFC() {
+// revealCount bounds how much of the path is drawn — used to animate the
+// route drawing progressively from start to end (see animatePathDraw).
+// segMult is expensive (BPR calc per edge) and constant for a given route,
+// so animatePathDraw precomputes it once and passes it in instead of
+// letting every one of ~60fps frames recompute it from scratch.
+function selectedFC(revealCount = Infinity, segMult?: Float64Array) {
   const r = routes[selected];
   if (!r) return { type: "FeatureCollection" as const, features: [] };
   const colorByTraffic = mode === "drive" && trafficOn;
-  const segMult = segmentMultipliers(graph, model, r.path, hour, trafficOn, mode, r.edges);
+  const mult = segMult ?? segmentMultipliers(graph, model, r.path, hour, trafficOn, mode, r.edges);
   const features = [];
-  for (let k = 1; k < r.path.length; k++) {
+  const end = Math.min(r.path.length, Math.max(2, revealCount));
+  for (let k = 1; k < end; k++) {
     const a = r.path[k - 1]!,
       b = r.path[k]!;
     features.push({
       type: "Feature" as const,
       properties: {
-        color: colorByTraffic ? congestionColor(segMult[k - 1] ?? 1) : BLUE,
+        color: colorByTraffic ? congestionColor(mult[k - 1] ?? 1) : BLUE,
       },
       geometry: {
         type: "LineString" as const,
@@ -303,6 +327,146 @@ function fitToRoute() {
   );
 }
 
+// ── Search animation ──────────────────────────────────────────
+// Replays the recorded settlement order (search-trace.ts) as growing dots,
+// then draws the winning path from start to end. Only walk/bike (WASM A*)
+// and drive+traffic (bidir A*+ALT) searches carry a trace — CH has no
+// frontier to animate and falls straight through to the instant render.
+
+const ANIM_SPEED_STEPS = [0.5, 1, 2, 4];
+const MAX_FRONTIER_POINTS = 20_000; // subsample pathological searches so a frame never has to draw more than this
+
+function getAnimSpeedMultiplier(): number {
+  const el = document.getElementById("anim-speed") as HTMLInputElement | null;
+  const v = el ? parseInt(el.value, 10) : 2;
+  return ANIM_SPEED_STEPS[v - 1] ?? 1;
+}
+
+function clamp(v: number, lo: number, hi: number) {
+  return Math.min(hi, Math.max(lo, v));
+}
+
+function updateAnimControls() {
+  const el = document.getElementById("anim-controls");
+  if (!el) return;
+  el.style.display = lastTrace && routes.length > 0 ? "" : "none";
+}
+
+function stopAnimation() {
+  if (animFrameId !== null) {
+    cancelAnimationFrame(animFrameId);
+    animFrameId = null;
+  }
+  if (mapReady) {
+    map.setLayoutProperty("search-frontier", "visibility", "none");
+    map.setLayoutProperty("meet-point", "visibility", "none");
+  }
+}
+
+function animateFrontier(trace: SearchTrace, durationMs: number, onDone: () => void) {
+  let order = trace.order;
+  let side = trace.side;
+  if (order.length > MAX_FRONTIER_POINTS) {
+    const sampleStep = Math.ceil(order.length / MAX_FRONTIER_POINTS);
+    const sOrder: number[] = [];
+    const sSide: number[] = [];
+    for (let i = 0; i < order.length; i += sampleStep) {
+      sOrder.push(order[i]!);
+      sSide.push(side[i]!);
+    }
+    order = Int32Array.from(sOrder);
+    side = Uint8Array.from(sSide);
+  }
+
+  const n = order.length;
+  if (n === 0) {
+    onDone();
+    return;
+  }
+  const features = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const node = order[i]!;
+    features[i] = {
+      type: "Feature" as const,
+      properties: { idx: i, side: side[i]! },
+      geometry: { type: "Point" as const, coordinates: [graph.lons[node]!, graph.lats[node]!] },
+    };
+  }
+  setData("search-frontier", { type: "FeatureCollection", features });
+  map.setLayoutProperty("search-frontier", "visibility", "visible");
+  map.setFilter("search-frontier", ["<=", ["get", "idx"], -1]);
+
+  const t0 = performance.now();
+  function tick() {
+    const p = Math.min(1, (performance.now() - t0) / durationMs);
+    map.setFilter("search-frontier", ["<=", ["get", "idx"], Math.round(p * (n - 1))]);
+    if (p < 1) {
+      animFrameId = requestAnimationFrame(tick);
+    } else {
+      animFrameId = null;
+      onDone();
+    }
+  }
+  animFrameId = requestAnimationFrame(tick);
+}
+
+function animatePathDraw(durationMs: number, onDone: () => void) {
+  const r = routes[selected];
+  if (!r) {
+    onDone();
+    return;
+  }
+  const total = r.path.length;
+  const segMult = segmentMultipliers(graph, model, r.path, hour, trafficOn, mode, r.edges);
+  const t0 = performance.now();
+  function tick() {
+    const p = Math.min(1, (performance.now() - t0) / durationMs);
+    setData("sel", selectedFC(Math.round(p * total), segMult));
+    if (p < 1) {
+      animFrameId = requestAnimationFrame(tick);
+    } else {
+      animFrameId = null;
+      onDone();
+    }
+  }
+  animFrameId = requestAnimationFrame(tick);
+}
+
+function playRouteAnimation() {
+  stopAnimation();
+  const r = routes[selected];
+  if (!mapReady || !lastTrace || !r) {
+    renderRoutesOnMap();
+    fitToRoute();
+    return;
+  }
+  setData("alts", { type: "FeatureCollection", features: [] });
+  setData("sel", { type: "FeatureCollection", features: [] });
+  fitToRoute();
+
+  const speed = getAnimSpeedMultiplier();
+  const frontierMs = clamp(lastTrace.order.length * 0.6, 500, 3000) / speed;
+  const pathMs = clamp(r.path.length * 8, 400, 1500) / speed;
+  animateFrontier(lastTrace, frontierMs, () => {
+    if (mapReady) map.setLayoutProperty("search-frontier", "visibility", "none");
+    if (mapReady && lastMeetNode !== null) {
+      setData("meet-point", {
+        type: "FeatureCollection",
+        features: [{
+          type: "Feature",
+          properties: {},
+          geometry: { type: "Point", coordinates: [graph.lons[lastMeetNode]!, graph.lats[lastMeetNode]!] },
+        }],
+      });
+      map.setLayoutProperty("meet-point", "visibility", "visible");
+    }
+    animatePathDraw(pathMs, () => {
+      if (mapReady) map.setLayoutProperty("meet-point", "visibility", "none");
+      renderRoutesOnMap();
+    });
+  });
+}
+
 function renderAll() {
   renderFields();
   renderCards();
@@ -374,12 +538,16 @@ function astarRouteOption(s: number, t: number, arrivalEnd: number | null): Rout
 function recomputeFull() {
   if (startIdx === null || endIdx === null) {
     routes = [];
+    lastTrace = null;
+    lastMeetNode = null;
     renderAll();
     return;
   }
 
   if (startIdx === endIdx) {
     routes = [];
+    lastTrace = null;
+    lastMeetNode = null;
     setHint("Origin and destination are the same — choose different points.");
     renderAll();
     return;
@@ -418,19 +586,29 @@ function recomputeFull() {
       routes = [];
       lastCH = null;
     }
+    lastTrace = null; // CH has no frontier to animate
+    lastMeetNode = null;
   } else if (mode === "drive" && trafficOn && rev !== null) {
     lastCH = null;
-    routes = computeRoutesBidir(
+    const result = computeRoutesBidir(
       graph, rev, router.weights, altData, router.restrictions, model,
-      startIdx, endIdx, hour, trafficOn, mode, undefined, arrivalEnd,
+      startIdx, endIdx, hour, trafficOn, mode, undefined, true, arrivalEnd,
     );
+    routes = result.options;
+    lastTrace = result.trace;
+    lastMeetNode = result.meetNode;
     const r = routes[0];
     lastBidir = r ? { settled: r.nodesVisited, queryMs: r.queryMs } : null;
     lastAstar = null;
   } else {
     lastCH = null;
     lastBidir = null;
-    routes = computeRoutes(graph, router, model, startIdx, endIdx, hour, trafficOn, mode, arrivalEnd);
+    const result = computeRoutes(
+      graph, router, model, startIdx, endIdx, hour, trafficOn, mode, mode !== "drive", arrivalEnd,
+    );
+    routes = result.options;
+    lastTrace = result.trace;
+    lastMeetNode = result.meetNode;
     const r = routes[0];
     lastAstar = r ? { settled: r.nodesVisited, queryMs: r.queryMs } : null;
   }
@@ -442,8 +620,16 @@ function recomputeFull() {
       : "No route found — try other points.",
   );
   updateModeNote();
-  renderAll();
-  if (routes.length > 0) fitToRoute();
+  renderFields();
+  renderCards();
+  renderSteps();
+  updateAnimControls();
+  if (routes.length > 0) {
+    playRouteAnimation();
+  } else {
+    stopAnimation();
+    renderRoutesOnMap();
+  }
 }
 
 // Single fastest route only, cheap enough to run live while dragging the slider.
@@ -480,9 +666,9 @@ function recomputePrimary() {
     // found during drag always matches what release shows. Using 2 iterations was
     // insufficient: the optimal route can require iter 3 to surface when bidirRoute
     // raw-weight ordering and pathWeight re-score ordering disagree.
-    const primary = computeRoutesBidir(
+    const { options: primary } = computeRoutesBidir(
       graph, rev, router.weights, altData, router.restrictions, model,
-      startIdx, endIdx, hour, trafficOn, mode, undefined, arrivalEnd,
+      startIdx, endIdx, hour, trafficOn, mode, undefined, false, arrivalEnd,
     );
     routes = primary.length > 0 ? [primary[0]!] : [];
     const r0 = routes[0];
@@ -588,14 +774,18 @@ function setMarker(which: "origin" | "dest", idx: number | null) {
 }
 
 function clearAll() {
+  stopAnimation();
   startIdx = endIdx = null;
   startLabel = endLabel = null;
   routes = [];
+  lastTrace = null;
+  lastMeetNode = null;
   selected = 0;
   setMarker("origin", null);
   setMarker("dest", null);
   setHint("Search or click the map to set the origin.");
   updateCalcButton();
+  updateAnimControls();
   renderAll();
 }
 
@@ -839,6 +1029,10 @@ function wireControls() {
     recomputeFull();
   });
 
+  $("anim-replay").addEventListener("click", () => {
+    if (lastTrace) playRouteAnimation();
+  });
+
   const trafficInput = $("traffic") as HTMLInputElement;
   trafficInput.addEventListener("change", () => {
     trafficOn = trafficInput.checked;
@@ -963,6 +1157,18 @@ async function boot() {
     "bottom-right",
   );
 
+  let usedFallbackStyle = false;
+  map.on("error", (e) => {
+    // Style-load failures (e.g. cartocdn unreachable) surface here with no
+    // sourceId; swap to the raster fallback once instead of leaving a blank map.
+    if (usedFallbackStyle || (e as { sourceId?: string }).sourceId) return;
+    const msg = String(e.error?.message ?? "");
+    if (!/style\.json|Failed to fetch|ERR_TIMED_OUT/i.test(msg)) return;
+    usedFallbackStyle = true;
+    console.warn("[map] primary basemap failed, falling back to raster OSM:", msg);
+    map.setStyle(BASEMAP_STYLE_FALLBACK as never);
+  });
+
   map.on("load", () => {
     // Category badge icons (place-<kind>) must be registered before the symbol
     // layer that references them.
@@ -984,6 +1190,39 @@ async function boot() {
         "line-color": ["get", "color"],
         "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1.5, 14, 3.5],
         "line-opacity": 0.72,
+      },
+    });
+
+    map.addSource("search-frontier", {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: [] },
+    });
+    map.addLayer({
+      id: "search-frontier",
+      type: "circle",
+      source: "search-frontier",
+      layout: { visibility: "none" },
+      paint: {
+        "circle-color": ["case", ["==", ["get", "side"], 1], "#f9ab00", "#4285f4"],
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 1.5, 16, 3],
+        "circle-opacity": 0.75,
+      },
+    });
+
+    map.addSource("meet-point", {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: [] },
+    });
+    map.addLayer({
+      id: "meet-point",
+      type: "circle",
+      source: "meet-point",
+      layout: { visibility: "none" },
+      paint: {
+        "circle-radius": 7,
+        "circle-color": "#673ab7",
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 2,
       },
     });
 

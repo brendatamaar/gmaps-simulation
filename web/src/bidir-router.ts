@@ -12,6 +12,7 @@ import type { Graph } from './graph.ts';
 import type { AltData } from './alt.ts';
 import { makeQueryHeuristics } from './alt.ts';
 import { isForbidden, type Restrictions } from './router.ts';
+import type { SearchTrace } from './search-trace.ts';
 import { TypedMinHeap } from './typed-heap.ts';
 
 export type BidirResult = {
@@ -20,6 +21,9 @@ export type BidirResult = {
   cost: number;
   settled: number;
   queryMs: number;
+  trace: SearchTrace | null;
+  // Node where the forward and backward searches met.
+  meet: number;
 };
 
 export type RevCSR = {
@@ -69,6 +73,10 @@ class BidirRouter {
   private heapF = new TypedMinHeap(4096);
   private heapB = new TypedMinHeap(4096);
 
+  // Settlement-order trace, only populated when a query requests it.
+  private orderNode: number[] = [];
+  private orderSide: number[] = [];
+
   constructor(n: number) {
     this.gF         = new Float64Array(n);
     this.gB         = new Float64Array(n);
@@ -85,8 +93,9 @@ class BidirRouter {
   query(
     graph: Graph, rev: RevCSR, weights: Float64Array,
     alt: AltData | null, restrictions: Restrictions | null, s: number, t: number,
+    collectTrace = false,
   ): BidirResult | null {
-    if (s === t) return { path: new Int32Array([s]), edges: new Int32Array(0), cost: 0, settled: 0, queryMs: 0 };
+    if (s === t) return { path: new Int32Array([s]), edges: new Int32Array(0), cost: 0, settled: 0, queryMs: 0, trace: null, meet: s };
     const t0  = performance.now();
     const ver = ++this.ver;
     const { gF, gB, parF, parB, eF, eB, stF, stB, closedVerF, closedVerB } = this;
@@ -113,6 +122,9 @@ class BidirRouter {
     heapF.push(s, hF(s));
     heapB.push(t, hB(t));
 
+    const orderNode = this.orderNode, orderSide = this.orderSide;
+    if (collectTrace) { orderNode.length = 0; orderSide.length = 0; }
+
     let mu = Infinity, meet = -1, settled = 0;
 
     while (heapF.size > 0 || heapB.size > 0) {
@@ -125,6 +137,7 @@ class BidirRouter {
         if (closedVerF[u] === ver) continue;
         closedVerF[u] = ver;
         settled++;
+        if (collectTrace) { orderNode.push(u); orderSide.push(0); }
         // prevNode for the incoming edge at u — also the "from" side of the
         // turn restriction check when u is a meet-node candidate below.
         const prevU = stF[u] === ver ? parF[u]! : -1;
@@ -151,6 +164,7 @@ class BidirRouter {
         if (closedVerB[v] === ver) continue;
         closedVerB[v] = ver;
         settled++;
+        if (collectTrace) { orderNode.push(v); orderSide.push(1); }
         // In the forward path: any predecessor u arrives at v, then continues to parB[v].
         // Check restriction u→v→parB[v] for each candidate predecessor u.
         const nextV = stB[v] === ver ? parB[v]! : -1;
@@ -184,7 +198,11 @@ class BidirRouter {
     fwd.reverse(); eis.reverse();
     for (let v = meet; parB[v]! !== -1; v = parB[v]!) { fwd.push(parB[v]!); eis.push(eB[v]!); }
 
-    return { path: new Int32Array(fwd), edges: new Int32Array(eis), cost: mu, settled, queryMs: performance.now() - t0 };
+    const trace = collectTrace
+      ? { order: Int32Array.from(orderNode), side: Uint8Array.from(orderSide) }
+      : null;
+
+    return { path: new Int32Array(fwd), edges: new Int32Array(eis), cost: mu, settled, queryMs: performance.now() - t0, trace, meet };
   }
 }
 
@@ -198,8 +216,9 @@ const _routers = new WeakMap<Graph, BidirRouter>();
 export function bidirRoute(
   graph: Graph, rev: RevCSR, weights: Float64Array,
   alt: AltData | null, restrictions: Restrictions | null, s: number, t: number,
+  collectTrace = false,
 ): BidirResult | null {
   let router = _routers.get(graph);
   if (!router) { router = new BidirRouter(graph.n); _routers.set(graph, router); }
-  return router.query(graph, rev, weights, alt, restrictions, s, t);
+  return router.query(graph, rev, weights, alt, restrictions, s, t, collectTrace);
 }

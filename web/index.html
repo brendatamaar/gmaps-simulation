@@ -427,6 +427,39 @@
         white-space: nowrap;
       }
 
+      /* Search animation controls */
+      .anim-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+      .anim-speed {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        font-size: 11px;
+        color: #5f6368;
+      }
+      .anim-speed input {
+        width: 100%;
+      }
+      #anim-replay {
+        padding: 8px 10px;
+        cursor: pointer;
+        font-size: 12px;
+        font-family: inherit;
+        background: #f1f3f4;
+        color: #3c4043;
+        border: none;
+        border-radius: 8px;
+        white-space: nowrap;
+      }
+      #anim-replay:hover {
+        background: #e8eaed;
+      }
+
       /* Calculate Route button */
       #calc-route {
         width: 100%;
@@ -562,6 +595,13 @@
 
         <div class="foot">
           <div class="note" id="modenote"></div>
+          <div class="anim-row" id="anim-controls" style="display: none">
+            <label class="anim-speed">
+              <span>Animation speed</span>
+              <input type="range" id="anim-speed" min="1" max="4" step="1" value="2" />
+            </label>
+            <button id="anim-replay" title="Replay search animation">↻ Replay</button>
+          </div>
           <button id="calc-route" disabled>Calculate Route</button>
           <button id="clear">Clear route</button>
         </div>

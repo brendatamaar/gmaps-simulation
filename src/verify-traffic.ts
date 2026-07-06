@@ -112,7 +112,7 @@ const departHour = 8;
 console.log(`\nMonas → Blok M, depart ${formatClock(departHour)}\n`);
 
 // --- alternatives (driving, rush hour) ---
-const routes = computeRoutes(graph, router, model, s, t, departHour, true, 'drive');
+const { options: routes } = computeRoutes(graph, router, model, s, t, departHour, true, 'drive');
 console.log(`Driving alternatives @ ${formatClock(departHour)} (traffic on): ${routes.length} option(s)`);
 routes.forEach((r, i) => {
   console.log(
