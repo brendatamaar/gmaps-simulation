@@ -359,6 +359,19 @@ function renderRoutesOnMap() {
   );
 }
 
+// Extra pixel padding beyond the toolbar/results chrome, so the pin markers
+// (which extend ~35px above and ~14px either side of their lngLat anchor —
+// see maplibregl.Marker's default offset) don't poke out under the toolbar
+// or get clipped at the map edge.
+const MARKER_PAD = { top: 40, bottom: 15, left: 15, right: 15 };
+
+// How far the search frontier is allowed to push the fitted view beyond the
+// route's own bounding box, as a fraction of the route's lat/lon span. Keeps
+// a handful of far-flung settled nodes (which the ALT heuristic occasionally
+// explores) from zooming the map way out — the route itself stays the
+// dominant factor in framing, with just enough slack for nearby frontier.
+const FRONTIER_EXPAND_FRAC = 0.4;
+
 function fitToRoute() {
   if (!mapReady || routes.length === 0) return;
   const r = routes[selected];
@@ -375,12 +388,46 @@ function fitToRoute() {
     if (lon < minLon) minLon = lon;
     if (lon > maxLon) maxLon = lon;
   }
+  const routeMinLat = minLat,
+    routeMaxLat = maxLat;
+  const routeMinLon = minLon,
+    routeMaxLon = maxLon;
+  // The bidir A*/ALT search can settle nodes somewhat outside the route
+  // corridor; fold those into the fitted bounds too so the frontier
+  // animation doesn't run off the edge of the view — but capped (below) so
+  // it can't blow the zoom out far past what the route itself needs.
+  if (lastTrace) {
+    const { order } = lastTrace;
+    for (let i = 0; i < order.length; i++) {
+      const node = order[i]!;
+      const lat = graph.lats[node]!,
+        lon = graph.lons[node]!;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+      if (lon < minLon) minLon = lon;
+      if (lon > maxLon) maxLon = lon;
+    }
+  }
+  const latPad = (routeMaxLat - routeMinLat) * FRONTIER_EXPAND_FRAC;
+  const lonPad = (routeMaxLon - routeMinLon) * FRONTIER_EXPAND_FRAC;
+  minLat = Math.max(minLat, routeMinLat - latPad);
+  maxLat = Math.min(maxLat, routeMaxLat + latPad);
+  minLon = Math.max(minLon, routeMinLon - lonPad);
+  maxLon = Math.min(maxLon, routeMaxLon + lonPad);
   map.fitBounds(
     [
       [minLon, minLat],
       [maxLon, maxLat],
     ],
-    { padding: { top: 110, bottom: 60, left: 380, right: 60 }, duration: 800 },
+    {
+      padding: {
+        top: 110 + MARKER_PAD.top,
+        bottom: 60 + MARKER_PAD.bottom,
+        left: 380 + MARKER_PAD.left,
+        right: 60 + MARKER_PAD.right,
+      },
+      duration: 800,
+    },
   );
 }
 
