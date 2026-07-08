@@ -808,8 +808,12 @@ function astarRouteOption(
 }
 
 // Full search incl. alternatives. Used on commit events (new endpoint, mode,
-// traffic toggle, slider release).
-function recomputeFull() {
+// traffic toggle, slider release). `animate: false` renders the result
+// statically instead of replaying the search-frontier/path-draw animation —
+// used on hour-slider release, where the route was already live-updated
+// during the drag and a full replay would be jarring.
+function recomputeFull(opts: { animate?: boolean } = {}) {
+  const animate = opts.animate ?? true;
   if (startIdx === null || endIdx === null) {
     routes = [];
     lastTrace = null;
@@ -922,17 +926,19 @@ function recomputeFull() {
   renderCards();
   renderSteps();
   updateAnimControls();
-  if (routes.length > 0) {
+  if (routes.length > 0 && animate) {
     playRouteAnimation();
   } else {
     stopAnimation();
     renderRoutesOnMap();
+    if (routes.length > 0) fitToRoute();
   }
 }
 
 // Single fastest route only, cheap enough to run live while dragging the slider.
 function recomputePrimary() {
   if (startIdx === null || endIdx === null) return;
+  stopAnimation();
 
   const useCH = mode === "drive" && !trafficOn && chRouter !== null;
   const arrivalEnd = arrivalOf?.get(endIdx) ?? null;
@@ -1355,9 +1361,11 @@ function wireControls() {
   hourInput.addEventListener("input", () => {
     hour = parseFloat(hourInput.value);
     $("hourval").textContent = formatClock(hour);
+    scheduleDragRecompute();
   });
   hourInput.addEventListener("change", () => {
     updateTrafficOverlay();
+    recomputeFull({ animate: false });
   });
 
   $("calc-route").addEventListener("click", () => {
