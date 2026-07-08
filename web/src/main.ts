@@ -252,22 +252,23 @@ function renderFields() {
 }
 
 function renderCards() {
+  $("results").classList.toggle("hidden", routes.length === 0);
   const host = $("routes");
   host.innerHTML = "";
-  const best = routes[0]?.etaSec ?? 0;
   routes.forEach((r, i) => {
     const steps = buildDirections(graph, r.path, r.edges);
     const via = primaryRoad(steps);
     const card = document.createElement("div");
     const classes = ["route-card"];
-    if (i === 0) classes.push("fastest");
     if (i === selected) classes.push("sel");
     card.className = classes.join(" ");
     card.innerHTML =
-      `<div class="eta" style="color:${i === 0 ? "#188038" : "#5f6368"}">${formatEta(r.etaSec)}</div>` +
+      `<div class="eta-row">` +
+      `<span class="eta" style="color:${i === 0 ? "#188038" : "#5f6368"}">${formatEta(r.etaSec)}</span>` +
+      `${i === 0 && routes.length > 1 ? `<span class="badge">Fastest</span>` : ""}` +
+      `</div>` +
       `<div class="meta"><b>${(r.distanceM / 1000).toFixed(1)} km</b>` +
-      `${via ? ` · via ${escHtml(via)}` : ""}<br>arrive ${arrivalClock(hour, r.etaSec)}` +
-      `${i === 0 && routes.length > 1 ? " · fastest" : ""}</div>`;
+      `${via ? ` · via ${escHtml(via)}` : ""}<br>arrive ${arrivalClock(hour, r.etaSec)}</div>`;
     card.addEventListener("click", () => selectRoute(i));
     host.appendChild(card);
   });
@@ -323,7 +324,7 @@ function fitToRoute() {
       [minLon, minLat],
       [maxLon, maxLat],
     ],
-    { padding: { top: 60, bottom: 60, left: 400, right: 60 }, duration: 800 },
+    { padding: { top: 110, bottom: 60, left: 380, right: 60 }, duration: 800 },
   );
 }
 
@@ -984,6 +985,24 @@ function wireSearch(inputId: "origin" | "dest", suggId: string) {
 function wireControls() {
   $("clear").addEventListener("click", clearAll);
 
+  const settingsToggle = $("settings-toggle") as HTMLButtonElement;
+  const settingsPanel = $("settings-panel");
+  settingsToggle.addEventListener("click", (e) => {
+    e.stopPropagation();
+    settingsPanel.hidden = !settingsPanel.hidden;
+    settingsToggle.classList.toggle("active", !settingsPanel.hidden);
+  });
+  document.addEventListener("click", (e) => {
+    if (
+      !settingsPanel.hidden &&
+      !settingsPanel.contains(e.target as Node) &&
+      e.target !== settingsToggle
+    ) {
+      settingsPanel.hidden = true;
+      settingsToggle.classList.remove("active");
+    }
+  });
+
   $("swap").addEventListener("click", () => {
     [startIdx, endIdx] = [endIdx, startIdx];
     [startLabel, endLabel] = [endLabel, startLabel];
@@ -1148,7 +1167,7 @@ async function boot() {
       [b.maxLng, b.maxLat],
     ],
     fitBoundsOptions: {
-      padding: { top: 40, bottom: 40, left: 400, right: 40 },
+      padding: { top: 110, bottom: 40, left: 40, right: 40 },
     },
     attributionControl: { compact: true },
   });

@@ -29,60 +29,49 @@
         font-size: 10px;
       }
 
-      /* ── Panel ───────────────────────────────────────────────────────── */
-      #panel {
+      /* ── Toolbar ─────────────────────────────────────────────────────── */
+      #toolbar {
         position: fixed;
-        top: 14px;
-        left: 14px;
-        z-index: 2;
-        width: 360px;
-        max-height: calc(100vh - 28px);
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 3;
+        height: 60px;
         display: flex;
-        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+        padding: 0 16px;
         background: #fff;
-        border-radius: 12px;
-        border-top: 3px solid #1a73e8;
+        border-bottom: 1px solid #dadce0;
         box-shadow:
-          0 2px 6px rgba(60, 64, 67, 0.3),
-          0 6px 20px rgba(60, 64, 67, 0.2);
-        overflow: hidden;
+          0 1px 2px rgba(60, 64, 67, 0.15),
+          0 2px 6px rgba(60, 64, 67, 0.1);
       }
 
-      /* Header */
-      .head {
-        padding: 12px 16px 10px;
-        border-bottom: 1px solid #f1f3f4;
-      }
-      .head h1 {
-        margin: 0;
-        font-size: 16px;
+      .tb-brand {
+        flex: none;
+        font-size: 15px;
         font-weight: 600;
-      }
-      .head .sub {
-        color: #5f6368;
-        font-size: 12px;
-        margin-top: 2px;
+        white-space: nowrap;
       }
 
       /* Mode selector — segmented pill control */
-      #modes {
-        padding: 10px 12px 8px;
-      }
       .modes-group {
         display: flex;
+        flex: none;
         background: #f1f3f4;
         border-radius: 10px;
         padding: 3px;
         gap: 2px;
       }
       #modes button {
-        flex: 1;
-        padding: 7px 0;
+        padding: 7px 10px;
         border: none;
         background: transparent;
         cursor: pointer;
         color: #5f6368;
         font-size: 13px;
+        white-space: nowrap;
         border-radius: 8px;
         font-family: inherit;
         transition:
@@ -103,24 +92,18 @@
           0 0 0 1px rgba(60, 64, 67, 0.08);
       }
 
-      /* Origin / destination with connector line */
-      .fields {
+      /* Origin / destination fields, laid out inline in the toolbar */
+      .tb-fields {
+        flex: 1 1 auto;
+        min-width: 0;
+        max-width: 640px;
         display: flex;
         align-items: center;
-        padding: 6px 12px 10px 16px;
-        gap: 10px;
-        border-bottom: 1px solid #f1f3f4;
-      }
-      .fields-connector {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        flex: none;
-        padding: 2px 0;
+        gap: 8px;
       }
       .dot {
-        width: 11px;
-        height: 11px;
+        width: 10px;
+        height: 10px;
         flex: none;
       }
       .dot.o {
@@ -131,22 +114,17 @@
         background: #ea4335;
         border-radius: 2px;
       }
-      .conn-line {
-        width: 2px;
-        height: 22px;
-        background: #dadce0;
-        margin: 4px 0;
-        border-radius: 1px;
-      }
-      .fields-inputs {
+      .tb-fields-inputs {
         flex: 1;
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
         min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
       }
       /* Search inputs */
       .field-input {
+        flex: 1;
+        min-width: 0;
         width: 100%;
         padding: 8px 10px;
         background: #f1f3f4;
@@ -168,7 +146,7 @@
         border-color: #1a73e8;
       }
 
-      /* Suggestion dropdown — fixed-positioned via JS to escape panel overflow:hidden */
+      /* Suggestion dropdown — fixed-positioned via JS to escape toolbar overflow */
       .suggestions {
         position: fixed;
         background: #fff;
@@ -237,10 +215,10 @@
         background: #f1f3f4;
         border: none;
         border-radius: 50%;
-        width: 30px;
-        height: 30px;
+        width: 28px;
+        height: 28px;
         cursor: pointer;
-        font-size: 16px;
+        font-size: 15px;
         color: #5f6368;
         display: flex;
         align-items: center;
@@ -255,11 +233,68 @@
         color: #1a73e8;
       }
 
-      /* Departure controls */
-      .controls {
-        padding: 12px 16px;
-        border-bottom: 1px solid #f1f3f4;
+      /* Right-hand toolbar actions: settings, calculate, clear */
+      .tb-actions {
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-left: auto;
       }
+      .icon-btn {
+        width: 36px;
+        height: 36px;
+        flex: none;
+        border: none;
+        border-radius: 50%;
+        background: #f1f3f4;
+        color: #5f6368;
+        font-size: 16px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition:
+          background 0.15s,
+          color 0.15s;
+      }
+      .icon-btn:hover {
+        background: #e8eaed;
+        color: #3c4043;
+      }
+      .icon-btn.active {
+        background: #e8f0fe;
+        color: #1a73e8;
+      }
+      #clear {
+        color: #c5221f;
+      }
+      #clear:hover {
+        background: #fce8e8;
+      }
+
+      .settings-wrap {
+        position: relative;
+        flex: none;
+      }
+      .settings-panel {
+        position: absolute;
+        top: calc(100% + 8px);
+        right: 0;
+        width: 280px;
+        background: #fff;
+        border-radius: 12px;
+        box-shadow:
+          0 2px 6px rgba(60, 64, 67, 0.3),
+          0 6px 20px rgba(60, 64, 67, 0.2);
+        padding: 14px 16px;
+        z-index: 4;
+      }
+      .settings-panel[hidden] {
+        display: none;
+      }
+
+      /* Departure controls (inside the settings dropdown) */
       .time-row {
         display: flex;
         align-items: center;
@@ -353,6 +388,50 @@
         background: linear-gradient(90deg, #34a853, #f9ab00, #ea4335);
       }
 
+      /* ── Status bar ──────────────────────────────────────────────────── */
+      #status-bar {
+        position: fixed;
+        top: 60px;
+        left: 0;
+        right: 0;
+        z-index: 2;
+        padding: 5px 16px;
+        background: #f8f9fa;
+        border-bottom: 1px solid #f1f3f4;
+        font-size: 12px;
+        line-height: 1.4;
+      }
+      #hint {
+        color: #5f6368;
+        min-height: 17px;
+      }
+      #modenote {
+        color: #9aa0a6;
+        font-size: 11px;
+        min-height: 15px;
+      }
+
+      /* ── Results panel ───────────────────────────────────────────────── */
+      #results {
+        position: fixed;
+        top: 104px;
+        left: 14px;
+        z-index: 2;
+        width: 340px;
+        max-height: calc(100vh - 118px);
+        display: flex;
+        flex-direction: column;
+        background: #fff;
+        border-radius: 12px;
+        box-shadow:
+          0 2px 6px rgba(60, 64, 67, 0.3),
+          0 6px 20px rgba(60, 64, 67, 0.2);
+        overflow: hidden;
+      }
+      #results.hidden {
+        display: none;
+      }
+
       /* Route cards with left color stripe */
       .scroll {
         overflow-y: auto;
@@ -362,32 +441,42 @@
       }
       .route-card {
         display: flex;
-        align-items: baseline;
-        gap: 10px;
+        flex-direction: column;
+        gap: 3px;
         padding: 10px 12px;
         border-radius: 10px;
+        border: 1.5px solid transparent;
         cursor: pointer;
         margin-bottom: 4px;
-        box-shadow: inset 3px 0 0 0 #9aa0a6;
-        transition: background 0.1s;
+        transition:
+          background 0.1s,
+          border-color 0.1s;
       }
       .route-card:hover {
         background: #f8f9fa;
       }
-      .route-card.fastest {
-        box-shadow: inset 3px 0 0 0 #34a853;
-      }
       .route-card.sel {
         background: #e8f0fe;
-        box-shadow: inset 3px 0 0 0 #1a73e8;
+        border-color: #1a73e8;
+      }
+      .route-card .eta-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
       }
       .route-card .eta {
         font-size: 18px;
         font-weight: 500;
         color: #188038;
       }
-      .route-card.slow .eta {
-        color: #c5221f;
+      .route-card .badge {
+        font-size: 10px;
+        font-weight: 600;
+        color: #188038;
+        background: #e6f4ea;
+        padding: 2px 8px;
+        border-radius: 10px;
+        white-space: nowrap;
       }
       .route-card .meta {
         font-size: 12px;
@@ -462,8 +551,8 @@
 
       /* Calculate Route button */
       #calc-route {
-        width: 100%;
-        padding: 10px;
+        flex: none;
+        padding: 9px 18px;
         cursor: pointer;
         font-size: 14px;
         font-family: inherit;
@@ -472,6 +561,7 @@
         border: none;
         border-radius: 8px;
         font-weight: 500;
+        white-space: nowrap;
         transition: background 0.15s, opacity 0.15s;
       }
       #calc-route:hover:not(:disabled) {
@@ -481,47 +571,23 @@
         opacity: 0.45;
         cursor: not-allowed;
       }
-      #calc-route + #clear {
-        margin-top: 8px;
-      }
 
-      /* Footer */
+      /* Footer (inside the results panel) — holds the animation controls */
       .foot {
         padding: 10px 16px 14px;
         border-top: 1px solid #f1f3f4;
       }
-      .note {
-        color: #80868b;
-        font-size: 11px;
-        line-height: 1.5;
-        margin-bottom: 10px;
-      }
-      #clear {
-        width: 100%;
-        padding: 9px;
-        cursor: pointer;
-        font-size: 13px;
-        font-family: inherit;
-        background: #fff4f4;
-        color: #c5221f;
-        border: 1px solid #f5c6c6;
-        border-radius: 8px;
-        font-weight: 500;
-        transition: background 0.15s;
-      }
-      #clear:hover {
-        background: #fce8e8;
+      .foot:empty {
+        display: none;
       }
     </style>
   </head>
   <body>
     <div id="app">
       <div id="map"></div>
-      <div id="panel">
-        <div class="head">
-          <h1>Route Simulation</h1>
-          <div class="sub" id="hint">Loading map…</div>
-        </div>
+
+      <header id="toolbar">
+        <div class="tb-brand">Route Simulation</div>
 
         <div id="modes">
           <div class="modes-group">
@@ -531,13 +597,9 @@
           </div>
         </div>
 
-        <div class="fields">
-          <div class="fields-connector">
-            <span class="dot o"></span>
-            <div class="conn-line"></div>
-            <span class="dot d"></span>
-          </div>
-          <div class="fields-inputs">
+        <div class="tb-fields">
+          <span class="dot o"></span>
+          <div class="tb-fields-inputs">
             <input
               class="field-input"
               id="origin"
@@ -545,6 +607,7 @@
               autocomplete="off"
               spellcheck="false"
             />
+            <button class="swap-btn" id="swap" title="Swap endpoints">⇅</button>
             <input
               class="field-input"
               id="dest"
@@ -553,48 +616,60 @@
               spellcheck="false"
             />
           </div>
-          <button class="swap-btn" id="swap" title="Swap endpoints">⇅</button>
+          <span class="dot d"></span>
         </div>
 
-        <div class="controls">
-          <div class="time-row">
-            <div class="time-label">
-              <span class="ctrl-icon">⏱</span><span>Departure time</span>
+        <div class="tb-actions">
+          <div class="settings-wrap">
+            <button id="settings-toggle" class="icon-btn" title="Trip settings">⚙</button>
+            <div class="settings-panel" id="settings-panel" hidden>
+              <div class="time-row">
+                <div class="time-label">
+                  <span class="ctrl-icon">⏱</span><span>Departure time</span>
+                </div>
+                <span id="hourval">08:00</span>
+              </div>
+              <input
+                type="range"
+                id="hour"
+                min="0"
+                max="23.5"
+                step="0.5"
+                value="8"
+              />
+              <label class="toggle"
+                ><input type="checkbox" id="traffic" checked /> Live traffic
+                (time-of-day)</label
+              >
+              <div class="traffic-legend">
+                <span>low</span>
+                <div class="bar"></div>
+                <span>peak</span>
+              </div>
+              <label class="toggle"
+                ><input type="checkbox" id="showtraffic" checked /> Traffic overlay</label
+              >
+              <label class="toggle"
+                ><input type="checkbox" id="showplaces" checked /> Places</label
+              >
             </div>
-            <span id="hourval">08:00</span>
           </div>
-          <input
-            type="range"
-            id="hour"
-            min="0"
-            max="23.5"
-            step="0.5"
-            value="8"
-          />
-          <label class="toggle"
-            ><input type="checkbox" id="traffic" checked /> Live traffic
-            (time-of-day)</label
-          >
-          <div class="traffic-legend">
-            <span>low</span>
-            <div class="bar"></div>
-            <span>peak</span>
-          </div>
-          <label class="toggle"
-            ><input type="checkbox" id="showtraffic" checked /> Traffic overlay</label
-          >
-          <label class="toggle"
-            ><input type="checkbox" id="showplaces" checked /> Places</label
-          >
+          <button id="calc-route" disabled>Calculate Route</button>
+          <button id="clear" class="icon-btn" title="Clear route">✕</button>
         </div>
+      </header>
 
+      <div id="status-bar">
+        <div id="hint">Loading map…</div>
+        <div id="modenote"></div>
+      </div>
+
+      <aside id="results" class="hidden">
         <div class="scroll">
           <div id="routes"></div>
           <div id="steps"></div>
         </div>
-
         <div class="foot">
-          <div class="note" id="modenote"></div>
           <div class="anim-row" id="anim-controls" style="display: none">
             <label class="anim-speed">
               <span>Animation speed</span>
@@ -602,12 +677,10 @@
             </label>
             <button id="anim-replay" title="Replay search animation">↻ Replay</button>
           </div>
-          <button id="calc-route" disabled>Calculate Route</button>
-          <button id="clear">Clear route</button>
         </div>
-      </div>
+      </aside>
     </div>
-    <!-- Fixed-positioned outside #panel to escape overflow:hidden -->
+    <!-- Fixed-positioned outside #toolbar to escape overflow clipping -->
     <div class="suggestions" id="origin-sugg" hidden></div>
     <div class="suggestions" id="dest-sugg" hidden></div>
 
