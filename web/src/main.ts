@@ -137,36 +137,71 @@ function initOverlayEdges() {
   overlayEis = new Int32Array(eis);
 }
 
-// Build a GeoJSON FeatureCollection of arterial edges colored by congestion.
-// Called on initial load and on every slider-release (change event).
-// Uses edgeCongestionMult() which falls back to the static model until the
-// Web Worker delivers cbdFactor/edgeDot.
+// GeoJSON FeatureCollection of arterial edges, built once (geometry never
+// changes) and re-colored in place on every rebuild instead of reallocating
+// tens of thousands of Feature objects + coordinate arrays each time.
+let trafficOverlayFC: {
+  type: "FeatureCollection";
+  features: {
+    type: "Feature";
+    properties: { color: string };
+    geometry: object;
+  }[];
+} | null = null;
+
+// Recolors the cached FeatureCollection for hour `h` and returns it. Called on
+// initial load and on every slider-release (change event). Uses
+// edgeCongestionMult() which falls back to the static model until the Web
+// Worker delivers cbdFactor/edgeDot.
 function buildTrafficOverlay(h: number): object {
   if (!overlayFroms || !overlayEis) {
     return { type: "FeatureCollection", features: [] };
   }
   const { lats, lons, targets, classes } = graph;
   const count = overlayEis.length;
-  const features = new Array(count);
-  for (let k = 0; k < count; k++) {
-    const i = overlayFroms[k]!, ei = overlayEis[k]!, j = targets[ei]!;
-    const mult = edgeCongestionMult(model, ei, classes[ei]!, h);
-    features[k] = {
-      type: "Feature",
-      properties: { color: congestionColor(mult) },
-      geometry: {
-        type: "LineString",
-        coordinates: [[lons[i]!, lats[i]!], [lons[j]!, lats[j]!]],
-      },
-    };
+  if (!trafficOverlayFC) {
+    const features = new Array(count);
+    for (let k = 0; k < count; k++) {
+      const i = overlayFroms[k]!,
+        ei = overlayEis[k]!,
+        j = targets[ei]!;
+      features[k] = {
+        type: "Feature" as const,
+        properties: { color: "" },
+        geometry: {
+          type: "LineString",
+          coordinates: [
+            [lons[i]!, lats[i]!],
+            [lons[j]!, lats[j]!],
+          ],
+        },
+      };
+    }
+    trafficOverlayFC = { type: "FeatureCollection", features };
   }
-  return { type: "FeatureCollection", features };
+  const { features } = trafficOverlayFC;
+  for (let k = 0; k < count; k++) {
+    const ei = overlayEis[k]!;
+    const mult = edgeCongestionMult(model, ei, classes[ei]!, h);
+    features[k]!.properties.color = congestionColor(mult);
+  }
+  return trafficOverlayFC;
 }
+
+// Hour changes while the overlay is hidden just mark it dirty instead of
+// rebuilding — the rebuild happens once, when the overlay is shown again.
+let trafficOverlayDirty = false;
 
 function updateTrafficOverlay() {
   if (!mapReady || !overlayFroms) return;
-  (map.getSource("traffic-overlay") as maplibregl.GeoJSONSource | undefined)
-    ?.setData(buildTrafficOverlay(hour) as never);
+  if (!($("showtraffic") as HTMLInputElement).checked) {
+    trafficOverlayDirty = true;
+    return;
+  }
+  trafficOverlayDirty = false;
+  (
+    map.getSource("traffic-overlay") as maplibregl.GeoJSONSource | undefined
+  )?.setData(buildTrafficOverlay(hour) as never);
 }
 
 // GeoJSON builders
@@ -1277,6 +1312,9 @@ function wireControls() {
       "visibility",
       trafficOverlayInput.checked ? "visible" : "none",
     );
+    if (trafficOverlayInput.checked && trafficOverlayDirty) {
+      updateTrafficOverlay();
+    }
   });
 
 
@@ -1420,6 +1458,9 @@ async function boot() {
 
     // Traffic overlay: arterial roads (class 0-2) colored by congestion at the
     // selected departure hour. Sits below route lines; updated on slider release.
+    // line-offset shifts each direction of a two-way road to its own right
+    // side (Google-style dual carriageway) instead of both directions
+    // painting on the exact same line and z-fighting arbitrarily.
     map.addSource("traffic-overlay", {
       type: "geojson",
       data: buildTrafficOverlay(hour) as never,
@@ -1432,6 +1473,7 @@ async function boot() {
       paint: {
         "line-color": ["get", "color"],
         "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1.5, 14, 3.5],
+        "line-offset": ["interpolate", ["linear"], ["zoom"], 10, 1, 14, 2.5],
         "line-opacity": 0.72,
       },
     });
