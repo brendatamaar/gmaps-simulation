@@ -281,6 +281,9 @@ const areaFilter = (z: number): maplibregl.FilterSpecification => [
 let lastZoomApplied = -1;
 function applyZoomThinning(force = false) {
   if (!mapReady) return;
+  // A basemap fallback swap (see boot()) briefly removes every custom layer;
+  // guard so a zoom event landing in that gap doesn't throw.
+  if (!map.getLayer("place-poi") || !map.getLayer("area-labels")) return;
   const z = Math.floor(map.getZoom());
   if (!force && z === lastZoomApplied) return;
   lastZoomApplied = z;
@@ -721,11 +724,19 @@ function playRouteAnimation() {
     if (mapReady && lastMeetNode !== null) {
       setData("meet-point", {
         type: "FeatureCollection",
-        features: [{
-          type: "Feature",
-          properties: {},
-          geometry: { type: "Point", coordinates: [graph.lons[lastMeetNode]!, graph.lats[lastMeetNode]!] },
-        }],
+        features: [
+          {
+            type: "Feature",
+            properties: {},
+            geometry: {
+              type: "Point",
+              coordinates: [
+                graph.lons[lastMeetNode]!,
+                graph.lats[lastMeetNode]!,
+              ],
+            },
+          },
+        ],
       });
       map.setLayoutProperty("meet-point", "visibility", "visible");
     }
@@ -1116,7 +1127,11 @@ function clearAll() {
 function onMapClick(e: maplibregl.MapMouseEvent) {
   if (mapReady) {
     // Clicking an alternative line selects it instead of dropping a point.
-    const altHit = map.queryRenderedFeatures(e.point, { layers: ["alts"] });
+    // Layers vanish briefly during a basemap fallback swap (see boot()), so
+    // guard each query on the layer actually existing.
+    const altHit = map.getLayer("alts")
+      ? map.queryRenderedFeatures(e.point, { layers: ["alts"] })
+      : [];
     const routeIdx = altHit[0]?.properties?.routeIdx;
     if (typeof routeIdx === "number") {
       selectRoute(routeIdx);
@@ -1124,17 +1139,22 @@ function onMapClick(e: maplibregl.MapMouseEvent) {
     }
 
     // Clicking a place sets that endpoint, snapped from the place's own coords.
-    const placeHit = map.queryRenderedFeatures(e.point, {
-      layers: ["place-poi"],
-    });
+    const placeHit = map.getLayer("place-poi")
+      ? map.queryRenderedFeatures(e.point, { layers: ["place-poi"] })
+      : [];
     const pIdx = placeHit[0]?.properties?.idx;
     if (typeof pIdx === "number" && places[pIdx]) {
       const p = places[pIdx];
-      setEndpoint(nearestNode(graph, p.lat, p.lon, mode === 'drive' ? 3 : 7), p.name);
+      setEndpoint(
+        nearestNode(graph, p.lat, p.lon, mode === "drive" ? 3 : 7),
+        p.name,
+      );
       return;
     }
   }
-  setEndpoint(nearestNode(graph, e.lngLat.lat, e.lngLat.lng, mode === 'drive' ? 3 : 7));
+  setEndpoint(
+    nearestNode(graph, e.lngLat.lat, e.lngLat.lng, mode === "drive" ? 3 : 7),
+  );
 }
 
 // Search
@@ -1414,7 +1434,6 @@ function wireControls() {
     }
   });
 
-
   const placesInput = $("showplaces") as HTMLInputElement;
   placesInput.addEventListener("change", () => {
     const vis = placesInput.checked ? "visible" : "none";
@@ -1553,227 +1572,313 @@ async function boot() {
     const msg = String(e.error?.message ?? "");
     if (!/style\.json|Failed to fetch|ERR_TIMED_OUT/i.test(msg)) return;
     usedFallbackStyle = true;
-    console.warn("[map] primary basemap failed, falling back to raster OSM:", msg);
+    // map.setStyle() below tears down every custom source/layer/image; mark
+    // not-ready until setupMapLayers() (style.load) rebuilds them so nothing
+    // queries a layer mid-swap.
+    mapReady = false;
+    console.warn(
+      "[map] primary basemap failed, falling back to raster OSM:",
+      msg,
+    );
     map.setStyle(BASEMAP_STYLE_FALLBACK as never);
   });
 
-  map.on("load", () => {
+  let mapHandlersWired = false;
+
+  // (Re)creates every custom source/layer/image. Idempotent so it can run
+  // both on the initial style load and again after a basemap fallback swap
+  // (map.setStyle wipes all sources/layers/images — see the "error" handler
+  // above — so they must be rebuilt from scratch, not just once at boot).
+  function setupMapLayers() {
+    const firstSetup = !mapHandlersWired;
+
     // Category badge icons (place-<kind>) must be registered before the symbol
-    // layer that references them.
+    // layer that references them. Already idempotent (checks map.hasImage).
     addPlaceIcons(map);
-    map.addSource("places", { type: "geojson", data: placesFC(places) });
+    if (!map.getSource("places")) {
+      map.addSource("places", { type: "geojson", data: placesFC(places) });
+    }
 
     // Traffic overlay: arterial roads (class 0-2) colored by congestion at the
     // selected departure hour. Sits below route lines; updated on slider release.
     // line-offset shifts each direction of a two-way road to its own right
     // side (Google-style dual carriageway) instead of both directions
     // painting on the exact same line and z-fighting arbitrarily.
-    map.addSource("traffic-overlay", {
-      type: "geojson",
-      data: buildTrafficOverlay(hour) as never,
-    });
-    map.addLayer({
-      id: "traffic-overlay",
-      type: "line",
-      source: "traffic-overlay",
-      layout: { "line-cap": "butt", "line-join": "round" },
-      paint: {
-        "line-color": ["get", "color"],
-        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1.5, 14, 3.5],
-        "line-offset": ["interpolate", ["linear"], ["zoom"], 10, 1, 14, 2.5],
-        "line-opacity": 0.72,
-      },
-    });
+    if (!map.getSource("traffic-overlay")) {
+      map.addSource("traffic-overlay", {
+        type: "geojson",
+        data: buildTrafficOverlay(hour) as never,
+      });
+    }
+    if (!map.getLayer("traffic-overlay")) {
+      map.addLayer({
+        id: "traffic-overlay",
+        type: "line",
+        source: "traffic-overlay",
+        layout: { "line-cap": "butt", "line-join": "round" },
+        paint: {
+          "line-color": ["get", "color"],
+          "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1.5, 14, 3.5],
+          "line-offset": ["interpolate", ["linear"], ["zoom"], 10, 1, 14, 2.5],
+          "line-opacity": 0.72,
+        },
+      });
+    }
 
-    map.addSource("search-frontier", {
-      type: "geojson",
-      data: { type: "FeatureCollection", features: [] },
-    });
-    map.addLayer({
-      id: "search-frontier",
-      type: "circle",
-      source: "search-frontier",
-      layout: { visibility: "none" },
-      paint: {
-        "circle-color": ["case", ["==", ["get", "side"], 1], "#f9ab00", "#4285f4"],
-        "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 1.5, 16, 3],
-        "circle-opacity": 0.75,
-      },
-    });
+    if (!map.getSource("search-frontier")) {
+      map.addSource("search-frontier", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+    }
+    if (!map.getLayer("search-frontier")) {
+      map.addLayer({
+        id: "search-frontier",
+        type: "circle",
+        source: "search-frontier",
+        layout: { visibility: "none" },
+        paint: {
+          "circle-color": [
+            "case",
+            ["==", ["get", "side"], 1],
+            "#f9ab00",
+            "#4285f4",
+          ],
+          "circle-radius": [
+            "interpolate",
+            ["linear"],
+            ["zoom"],
+            10,
+            1.5,
+            16,
+            3,
+          ],
+          "circle-opacity": 0.75,
+        },
+      });
+    }
 
-    map.addSource("meet-point", {
-      type: "geojson",
-      data: { type: "FeatureCollection", features: [] },
-    });
-    map.addLayer({
-      id: "meet-point",
-      type: "circle",
-      source: "meet-point",
-      layout: { visibility: "none" },
-      paint: {
-        "circle-radius": 7,
-        "circle-color": "#673ab7",
-        "circle-stroke-color": "#ffffff",
-        "circle-stroke-width": 2,
-      },
-    });
+    if (!map.getSource("meet-point")) {
+      map.addSource("meet-point", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+    }
+    if (!map.getLayer("meet-point")) {
+      map.addLayer({
+        id: "meet-point",
+        type: "circle",
+        source: "meet-point",
+        layout: { visibility: "none" },
+        paint: {
+          "circle-radius": 7,
+          "circle-color": "#673ab7",
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 2,
+        },
+      });
+    }
 
-    map.addSource("alts", {
-      type: "geojson",
-      data: { type: "FeatureCollection", features: [] },
-    });
-    map.addSource("sel", {
-      type: "geojson",
-      data: { type: "FeatureCollection", features: [] },
-    });
+    if (!map.getSource("alts")) {
+      map.addSource("alts", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+    }
+    if (!map.getSource("sel")) {
+      map.addSource("sel", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+    }
     // Tracks the partial edge currently being drawn during animatePathDraw,
     // so the route grows continuously instead of snapping edge-by-edge.
-    map.addSource("sel-progress", {
-      type: "geojson",
-      data: { type: "FeatureCollection", features: [] },
-    });
+    if (!map.getSource("sel-progress")) {
+      map.addSource("sel-progress", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+    }
 
-    map.addLayer({
-      id: "alts",
-      type: "line",
-      source: "alts",
-      layout: { "line-cap": "round", "line-join": "round" },
-      paint: {
-        "line-color": "#9aa0a6",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3, 16, 7],
-        "line-opacity": 0.85,
-      },
-    });
-    map.addLayer({
-      id: "sel-casing",
-      type: "line",
-      source: "sel",
-      layout: { "line-cap": "round", "line-join": "round" },
-      paint: {
-        "line-color": "#ffffff",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 6, 16, 12],
-      },
-    });
-    map.addLayer({
-      id: "sel-line",
-      type: "line",
-      source: "sel",
-      layout: { "line-cap": "round", "line-join": "round" },
-      paint: {
-        "line-color": ["get", "color"],
-        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4, 16, 8],
-      },
-    });
-    map.addLayer({
-      id: "sel-progress",
-      type: "line",
-      source: "sel-progress",
-      layout: { "line-cap": "round", "line-join": "round" },
-      paint: {
-        "line-color": ["get", "color"],
-        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4, 16, 8],
-      },
-    });
-    map.addLayer({
-      id: "path-head",
-      type: "circle",
-      source: "sel-progress",
-      layout: { visibility: "none" },
-      paint: {
-        "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 4, 16, 7],
-        "circle-color": "#ffffff",
-        "circle-stroke-color": ["get", "color"],
-        "circle-stroke-width": 3,
-      },
-    });
+    if (!map.getLayer("alts")) {
+      map.addLayer({
+        id: "alts",
+        type: "line",
+        source: "alts",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": "#9aa0a6",
+          "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3, 16, 7],
+          "line-opacity": 0.85,
+        },
+      });
+    }
+    if (!map.getLayer("sel-casing")) {
+      map.addLayer({
+        id: "sel-casing",
+        type: "line",
+        source: "sel",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": "#ffffff",
+          "line-width": ["interpolate", ["linear"], ["zoom"], 10, 6, 16, 12],
+        },
+      });
+    }
+    if (!map.getLayer("sel-line")) {
+      map.addLayer({
+        id: "sel-line",
+        type: "line",
+        source: "sel",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": ["get", "color"],
+          "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4, 16, 8],
+        },
+      });
+    }
+    if (!map.getLayer("sel-progress")) {
+      map.addLayer({
+        id: "sel-progress",
+        type: "line",
+        source: "sel-progress",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": ["get", "color"],
+          "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4, 16, 8],
+        },
+      });
+    }
+    if (!map.getLayer("path-head")) {
+      map.addLayer({
+        id: "path-head",
+        type: "circle",
+        source: "sel-progress",
+        layout: { visibility: "none" },
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 4, 16, 7],
+          "circle-color": "#ffffff",
+          "circle-stroke-color": ["get", "color"],
+          "circle-stroke-width": 3,
+        },
+      });
+    }
 
     // Category badge + label (above the route). icon-allow-overlap is false so
     // badges declutter on collision; symbol-sort-key gives the bounded/iconic
     // kinds priority over the dense worship/food markers when they collide.
-    map.addLayer({
-      id: "place-poi",
-      type: "symbol",
-      source: "places",
-      minzoom: ZMIN,
-      filter: poiFilter(ZMIN),
-      layout: {
-        "icon-image": ["concat", "place-", ["get", "kind"]],
-        "icon-size": ["interpolate", ["linear"], ["zoom"], 11, 0.7, 16, 1],
-        "icon-allow-overlap": false,
-        "text-field": ["get", "name"],
-        "text-size": 11,
-        "text-anchor": "top",
-        "text-offset": [0, 0.7],
-        "text-max-width": 9,
-        "text-optional": true,
-        "symbol-sort-key": [
-          "match",
-          ["get", "kind"],
-          ["airport", "train", "lrt"],
-          1,
-          ["bus", "hospital"],
-          2,
-          [
-            "university",
-            "shopping",
-            "office",
-            "park",
-            "landmark",
-            "attraction",
+    if (!map.getLayer("place-poi")) {
+      map.addLayer({
+        id: "place-poi",
+        type: "symbol",
+        source: "places",
+        minzoom: ZMIN,
+        filter: poiFilter(ZMIN),
+        layout: {
+          "icon-image": ["concat", "place-", ["get", "kind"]],
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 11, 0.7, 16, 1],
+          "icon-allow-overlap": false,
+          "text-field": ["get", "name"],
+          "text-size": 11,
+          "text-anchor": "top",
+          "text-offset": [0, 0.7],
+          "text-max-width": 9,
+          "text-optional": true,
+          "symbol-sort-key": [
+            "match",
+            ["get", "kind"],
+            ["airport", "train", "lrt"],
+            1,
+            ["bus", "hospital"],
+            2,
+            [
+              "university",
+              "shopping",
+              "office",
+              "park",
+              "landmark",
+              "attraction",
+            ],
+            3,
+            ["services", "hotel", "food"],
+            4,
+            ["clinic", "school", "bar", "worship"],
+            5,
+            3,
           ],
-          3,
-          ["services", "hotel", "food"],
-          4,
-          ["clinic", "school", "bar", "worship"],
-          5,
-          3,
-        ],
-      },
-      paint: {
-        "text-color": "#3c4043",
-        "text-halo-color": "#fff",
-        "text-halo-width": 1.4,
-      },
-    });
+        },
+        paint: {
+          "text-color": "#3c4043",
+          "text-halo-color": "#fff",
+          "text-halo-width": 1.4,
+        },
+      });
+    }
     // Area/neighbourhood labels: text only, uppercase, no dot.
-    map.addLayer({
-      id: "area-labels",
-      type: "symbol",
-      source: "places",
-      minzoom: ZMIN,
-      filter: areaFilter(ZMIN),
-      layout: {
-        "text-field": ["get", "name"],
-        "text-transform": "uppercase",
-        "text-size": ["interpolate", ["linear"], ["zoom"], 10, 10, 15, 13],
-        "text-letter-spacing": 0.08,
-        "text-max-width": 8,
-      },
-      paint: {
-        "text-color": "#5f6368",
-        "text-halo-color": "#fff",
-        "text-halo-width": 1.4,
-      },
-    });
+    if (!map.getLayer("area-labels")) {
+      map.addLayer({
+        id: "area-labels",
+        type: "symbol",
+        source: "places",
+        minzoom: ZMIN,
+        filter: areaFilter(ZMIN),
+        layout: {
+          "text-field": ["get", "name"],
+          "text-transform": "uppercase",
+          "text-size": ["interpolate", ["linear"], ["zoom"], 10, 10, 15, 13],
+          "text-letter-spacing": 0.08,
+          "text-max-width": 8,
+        },
+        paint: {
+          "text-color": "#5f6368",
+          "text-halo-color": "#fff",
+          "text-halo-width": 1.4,
+        },
+      });
+    }
 
-    map.on("click", onMapClick);
-    map.on("zoom", () => applyZoomThinning());
-    for (const ly of ["alts", "place-poi"]) {
-      map.on("mouseenter", ly, () => {
-        map.getCanvas().style.cursor = "pointer";
-      });
-      map.on("mouseleave", ly, () => {
-        map.getCanvas().style.cursor = "default";
-      });
+    // Map-level event listeners are independent of the style and survive a
+    // setStyle() call, so they're wired once, not on every setup pass.
+    if (!mapHandlersWired) {
+      mapHandlersWired = true;
+      map.on("click", onMapClick);
+      map.on("zoom", () => applyZoomThinning());
+      for (const ly of ["alts", "place-poi"]) {
+        map.on("mouseenter", ly, () => {
+          map.getCanvas().style.cursor = "pointer";
+        });
+        map.on("mouseleave", ly, () => {
+          map.getCanvas().style.cursor = "default";
+        });
+      }
+    }
+
+    // Restore layer visibility to match the current checkbox state — a fresh
+    // style's layers default to visible regardless of what the user had set.
+    map.setLayoutProperty(
+      "traffic-overlay",
+      "visibility",
+      ($("showtraffic") as HTMLInputElement).checked ? "visible" : "none",
+    );
+    const placesVis = ($("showplaces") as HTMLInputElement).checked
+      ? "visible"
+      : "none";
+    for (const ly of ["place-poi", "area-labels"]) {
+      map.setLayoutProperty(ly, "visibility", placesVis);
     }
 
     mapReady = true;
     applyZoomThinning(true);
     renderRoutesOnMap();
-    setHint(
-      `${graph.n.toLocaleString()} nodes loaded · computing traffic model… Search or click the map to set the origin.`,
-    );
-  });
+
+    if (firstSetup) {
+      setHint(
+        `${graph.n.toLocaleString()} nodes loaded · computing traffic model… Search or click the map to set the origin.`,
+      );
+    }
+  }
+
+  map.on("style.load", setupMapLayers);
 
   wireControls();
 }
