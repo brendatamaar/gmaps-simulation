@@ -494,9 +494,47 @@
         font-weight: 500;
       }
 
-      /* Turn-by-turn steps */
+      /* Turn-by-turn steps — collapsible */
+      .steps-section[hidden] {
+        display: none;
+      }
+      .steps-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+        padding: 10px 12px;
+        background: transparent;
+        border: none;
+        border-top: 1px solid #f1f3f4;
+        cursor: pointer;
+        font-family: inherit;
+        font-size: 13px;
+        font-weight: 500;
+        color: #3c4043;
+        text-align: left;
+      }
+      .steps-toggle:hover {
+        background: #f8f9fa;
+      }
+      .steps-toggle .chevron {
+        color: #5f6368;
+        font-size: 11px;
+        transition: transform 0.2s;
+      }
+      .steps-toggle[aria-expanded="true"] .chevron {
+        transform: rotate(180deg);
+      }
       #steps {
         padding: 4px 8px 10px;
+        overflow: hidden;
+        max-height: 2000px;
+        transition: max-height 0.2s ease;
+      }
+      #steps.collapsed {
+        padding-top: 0;
+        padding-bottom: 0;
+        max-height: 0;
       }
       .step {
         display: grid;
@@ -680,7 +718,18 @@
       <aside id="results" class="hidden">
         <div class="scroll">
           <div id="routes"></div>
-          <div id="steps"></div>
+          <div class="steps-section" id="steps-section" hidden>
+            <button
+              type="button"
+              class="steps-toggle"
+              id="steps-toggle"
+              aria-expanded="false"
+            >
+              <span id="steps-title">Directions</span>
+              <span class="chevron">▾</span>
+            </button>
+            <div id="steps" class="collapsed"></div>
+          </div>
         </div>
         <div class="foot">
           <div class="anim-row" id="anim-controls" style="display: none">

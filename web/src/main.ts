@@ -327,10 +327,15 @@ function renderCards() {
 
 function renderSteps() {
   const host = $("steps");
+  const section = $("steps-section");
   host.innerHTML = "";
   const r = routes[selected];
+  section.hidden = !r;
   if (!r) return;
-  for (const st of buildDirections(graph, r.path)) {
+  const steps = buildDirections(graph, r.path, r.edges);
+  $("steps-title").textContent =
+    `Directions · ${steps.length} step${steps.length === 1 ? "" : "s"}`;
+  for (const st of steps) {
     const row = document.createElement("div");
     row.className = "step";
     row.innerHTML =
@@ -1374,6 +1379,14 @@ function wireControls() {
 
   $("anim-replay").addEventListener("click", () => {
     if (lastTrace) playRouteAnimation();
+  });
+
+  const stepsToggle = $("steps-toggle") as HTMLButtonElement;
+  const stepsHost = $("steps");
+  stepsToggle.addEventListener("click", () => {
+    const expanded = stepsToggle.getAttribute("aria-expanded") === "true";
+    stepsToggle.setAttribute("aria-expanded", String(!expanded));
+    stepsHost.classList.toggle("collapsed", expanded);
   });
 
   const trafficInput = $("traffic") as HTMLInputElement;
