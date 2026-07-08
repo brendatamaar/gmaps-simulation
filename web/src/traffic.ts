@@ -267,21 +267,31 @@ export function edgeCongestionMult(
   return staticMult[ei]! * congestionMultiplier(hour, cls);
 }
 
-// Congestion multiplier → colour.
+// Congestion multiplier → colour. Tiered green→amber→red→dark-red so that
+// at-capacity (mult≈3) and true gridlock (mult 6+, reachable since bprAlpha=1.9
+// with v/c capped at 2 pushes mult up to ~8.6) render as visibly distinct
+// severities instead of clamping to the same red.
+const GREEN: readonly [number, number, number] = [52, 168, 83];
+const AMBER: readonly [number, number, number] = [249, 171, 0];
+const RED: readonly [number, number, number] = [234, 67, 53];
+const DARK_RED: readonly [number, number, number] = [127, 0, 0];
+
+function mixChannel(a: number, b: number, t: number): number {
+  return Math.round(a + (b - a) * t);
+}
+
 export function congestionColor(mult: number): string {
-  const x = Math.max(0, Math.min(1, (mult - 1) / 2));
-  let r: number, g: number, b: number;
-  if (x < 0.5) {
-    const t = x * 2;
-    r = Math.round(52  + t * (249 - 52));
-    g = Math.round(168 + t * (171 - 168));
-    b = Math.round(83  + t * (0   - 83));
+  let c0: readonly [number, number, number], c1: readonly [number, number, number], t: number;
+  if (mult <= 2) {
+    c0 = GREEN; c1 = AMBER; t = Math.max(0, mult - 1);
+  } else if (mult <= 3) {
+    c0 = AMBER; c1 = RED; t = mult - 2;
   } else {
-    const t = (x - 0.5) * 2;
-    r = Math.round(249 + t * (234 - 249));
-    g = Math.round(171 + t * (67  - 171));
-    b = Math.round(0   + t * (53  - 0));
+    c0 = RED; c1 = DARK_RED; t = Math.min(1, (mult - 3) / 3);
   }
+  const r = mixChannel(c0[0], c1[0], t);
+  const g = mixChannel(c0[1], c1[1], t);
+  const b = mixChannel(c0[2], c1[2], t);
   return `rgb(${r},${g},${b})`;
 }
 
