@@ -311,13 +311,15 @@
       .ctrl-icon {
         font-size: 14px;
       }
-      #hourval {
+      #hourval,
+      #animspeedval {
         font-size: 20px;
         font-weight: 600;
         color: #202124;
         letter-spacing: -0.5px;
       }
-      #hour {
+      #hour,
+      #anim-speed {
         width: 100%;
         margin: 0 0 12px;
         accent-color: #1a73e8;
@@ -560,25 +562,13 @@
         white-space: nowrap;
       }
 
-      /* Search animation controls */
+      /* Search animation replay control */
       .anim-row {
         display: flex;
         align-items: center;
-        gap: 10px;
-        margin-bottom: 8px;
-      }
-      .anim-speed {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        font-size: 11px;
-        color: #5f6368;
-      }
-      .anim-speed input {
-        width: 100%;
       }
       #anim-replay {
+        flex: 1;
         padding: 8px 10px;
         cursor: pointer;
         font-size: 12px;
@@ -606,7 +596,9 @@
         border-radius: 8px;
         font-weight: 500;
         white-space: nowrap;
-        transition: background 0.15s, opacity 0.15s;
+        transition:
+          background 0.15s,
+          opacity 0.15s;
       }
       #calc-route:hover:not(:disabled) {
         background: #1558b0;
@@ -703,6 +695,22 @@
                 ><input type="checkbox" id="keepfrontier" /> Keep search dots
                 after animation</label
               >
+              <div class="time-row" style="margin-top: 10px">
+                <div class="time-label">
+                  <span class="ctrl-icon">▶</span
+                  ><span>Animation speed</span>
+                </div>
+                <span id="animspeedval">0.5×</span>
+              </div>
+              <input
+                type="range"
+                id="anim-speed"
+                min="1"
+                max="4"
+                step="1"
+                value="1"
+                style="margin-bottom: 0"
+              />
             </div>
           </div>
           <button id="calc-route" disabled>Calculate Route</button>
@@ -733,11 +741,9 @@
         </div>
         <div class="foot">
           <div class="anim-row" id="anim-controls" style="display: none">
-            <label class="anim-speed">
-              <span>Animation speed</span>
-              <input type="range" id="anim-speed" min="1" max="4" step="1" value="2" />
-            </label>
-            <button id="anim-replay" title="Replay search animation">↻ Replay</button>
+            <button id="anim-replay" title="Replay search animation">
+              ↻ Replay search animation
+            </button>
           </div>
         </div>
       </aside>

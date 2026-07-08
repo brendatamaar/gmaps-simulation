@@ -1381,6 +1381,11 @@ function wireControls() {
     if (lastTrace) playRouteAnimation();
   });
 
+  const animSpeedInput = $("anim-speed") as HTMLInputElement;
+  animSpeedInput.addEventListener("input", () => {
+    $("animspeedval").textContent = `${getAnimSpeedMultiplier()}×`;
+  });
+
   const stepsToggle = $("steps-toggle") as HTMLButtonElement;
   const stepsHost = $("steps");
   stepsToggle.addEventListener("click", () => {
