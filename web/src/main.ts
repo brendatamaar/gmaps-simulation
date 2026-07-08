@@ -1,7 +1,7 @@
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
-import { loadGraph, nearestNode, type Graph } from "./graph.ts";
+import { loadGraph, nearestNode, haversine, type Graph } from "./graph.ts";
 import {
   initRouter, loadRestrictions, emptyRestrictions, pathViolatesRestriction,
   type Router, type Restrictions,
@@ -194,6 +194,7 @@ function selectedFC(revealCount = Infinity, segMult?: Float64Array) {
     features.push({
       type: "Feature" as const,
       properties: {
+        idx: k - 1,
         color: colorByTraffic ? congestionColor(mult[k - 1] ?? 1) : BLUE,
       },
       geometry: {
@@ -294,6 +295,12 @@ function renderRoutesOnMap() {
   if (!mapReady) return;
   setData("alts", altsFC());
   setData("sel", selectedFC());
+  // A previous animation may have left a reveal filter on these layers; a
+  // static (non-animated) render always shows the full path.
+  map.setFilter("sel-casing", null);
+  map.setFilter("sel-line", null);
+  setData("sel-progress", { type: "FeatureCollection", features: [] });
+  map.setLayoutProperty("path-head", "visibility", "none");
   // Dim the overlay while a route is shown so the route line stands out.
   // Restores automatically when the route is cleared.
   map.setPaintProperty(
@@ -347,6 +354,14 @@ function clamp(v: number, lo: number, hi: number) {
   return Math.min(hi, Math.max(lo, v));
 }
 
+// Decelerating curve (fast start, gentle settle) used for both animation
+// phases instead of raw linear progress — reads as fluid motion rather than
+// a mechanical, constant-speed sweep.
+function easeOutCubic(t: number): number {
+  const f = t - 1;
+  return f * f * f + 1;
+}
+
 function updateAnimControls() {
   const el = document.getElementById("anim-controls");
   if (!el) return;
@@ -361,6 +376,10 @@ function stopAnimation() {
   if (mapReady) {
     map.setLayoutProperty("search-frontier", "visibility", "none");
     map.setLayoutProperty("meet-point", "visibility", "none");
+    map.setLayoutProperty("path-head", "visibility", "none");
+    map.setFilter("sel-casing", null);
+    map.setFilter("sel-line", null);
+    setData("sel-progress", { type: "FeatureCollection", features: [] });
   }
 }
 
@@ -399,9 +418,10 @@ function animateFrontier(trace: SearchTrace, durationMs: number, onDone: () => v
 
   const t0 = performance.now();
   function tick() {
-    const p = Math.min(1, (performance.now() - t0) / durationMs);
-    map.setFilter("search-frontier", ["<=", ["get", "idx"], Math.round(p * (n - 1))]);
-    if (p < 1) {
+    const raw = Math.min(1, (performance.now() - t0) / durationMs);
+    const eased = easeOutCubic(raw);
+    map.setFilter("search-frontier", ["<=", ["get", "idx"], Math.round(eased * (n - 1))]);
+    if (raw < 1) {
       animFrameId = requestAnimationFrame(tick);
     } else {
       animFrameId = null;
@@ -413,20 +433,113 @@ function animateFrontier(trace: SearchTrace, durationMs: number, onDone: () => v
 
 function animatePathDraw(durationMs: number, onDone: () => void) {
   const r = routes[selected];
-  if (!r) {
+  if (!r || r.path.length < 2) {
     onDone();
     return;
   }
-  const total = r.path.length;
   const segMult = segmentMultipliers(graph, model, r.path, hour, trafficOn, mode, r.edges);
+  const fc = selectedFC(Infinity, segMult);
+  const segCount = fc.features.length; // = r.path.length - 1
+  if (segCount === 0) {
+    onDone();
+    return;
+  }
+
+  // Reveal by distance travelled, not by hop count — otherwise a few long
+  // edges (highway stretches) snap into view instantly while a cluster of
+  // short intersection hops crawls, making the draw look uneven.
+  const segLen = new Float64Array(segCount);
+  const cumLen = new Float64Array(segCount);
+  let acc = 0;
+  for (let k = 1; k < r.path.length; k++) {
+    const a = r.path[k - 1]!, b = r.path[k]!;
+    const d = haversine(graph.lats[a]!, graph.lons[a]!, graph.lats[b]!, graph.lons[b]!);
+    segLen[k - 1] = d;
+    acc += d;
+    cumLen[k - 1] = acc;
+  }
+  const totalLen = acc || 1;
+
+  const colorByTraffic = mode === "drive" && trafficOn;
+  const colorFor = (segIdx: number) =>
+    colorByTraffic ? congestionColor(segMult[segIdx] ?? 1) : BLUE;
+
+  setData("sel", fc);
+  map.setFilter("sel-casing", ["<=", ["get", "idx"], -1]);
+  map.setFilter("sel-line", ["<=", ["get", "idx"], -1]);
+  map.setLayoutProperty("path-head", "visibility", "visible");
+
+  // Index of the last fully-revealed segment for a given travelled distance
+  // (binary search over the monotonic cumulative-length array).
+  function completedSegFor(target: number): number {
+    let lo = 0, hi = segCount - 1, ans = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (cumLen[mid]! <= target) {
+        ans = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return ans;
+  }
+
+  function finish() {
+    map.setFilter("sel-casing", null);
+    map.setFilter("sel-line", null);
+    setData("sel-progress", { type: "FeatureCollection", features: [] });
+    map.setLayoutProperty("path-head", "visibility", "none");
+  }
+
   const t0 = performance.now();
   function tick() {
-    const p = Math.min(1, (performance.now() - t0) / durationMs);
-    setData("sel", selectedFC(Math.round(p * total), segMult));
-    if (p < 1) {
+    const raw = Math.min(1, (performance.now() - t0) / durationMs);
+    const eased = easeOutCubic(raw);
+    const target = eased * totalLen;
+    const completed = completedSegFor(target);
+    const filter: maplibregl.FilterSpecification = ["<=", ["get", "idx"], completed];
+    map.setFilter("sel-casing", filter);
+    map.setFilter("sel-line", filter);
+
+    const partialIdx = completed + 1;
+    if (raw < 1 && partialIdx < segCount) {
+      const segStart = completed >= 0 ? cumLen[completed]! : 0;
+      const frac = clamp((target - segStart) / (segLen[partialIdx] || 1), 0, 1);
+      const aNode = r.path[partialIdx]!, bNode = r.path[partialIdx + 1]!;
+      const lon = graph.lons[aNode]! + (graph.lons[bNode]! - graph.lons[aNode]!) * frac;
+      const lat = graph.lats[aNode]! + (graph.lats[bNode]! - graph.lats[aNode]!) * frac;
+      const color = colorFor(partialIdx);
+      setData("sel-progress", {
+        type: "FeatureCollection",
+        features: [
+          {
+            type: "Feature",
+            properties: { color },
+            geometry: {
+              type: "LineString",
+              coordinates: [
+                [graph.lons[aNode]!, graph.lats[aNode]!],
+                [lon, lat],
+              ],
+            },
+          },
+          {
+            type: "Feature",
+            properties: { color },
+            geometry: { type: "Point", coordinates: [lon, lat] },
+          },
+        ],
+      });
+    } else {
+      setData("sel-progress", { type: "FeatureCollection", features: [] });
+    }
+
+    if (raw < 1) {
       animFrameId = requestAnimationFrame(tick);
     } else {
       animFrameId = null;
+      finish();
       onDone();
     }
   }
@@ -1253,6 +1366,12 @@ async function boot() {
       type: "geojson",
       data: { type: "FeatureCollection", features: [] },
     });
+    // Tracks the partial edge currently being drawn during animatePathDraw,
+    // so the route grows continuously instead of snapping edge-by-edge.
+    map.addSource("sel-progress", {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: [] },
+    });
 
     map.addLayer({
       id: "alts",
@@ -1283,6 +1402,28 @@ async function boot() {
       paint: {
         "line-color": ["get", "color"],
         "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4, 16, 8],
+      },
+    });
+    map.addLayer({
+      id: "sel-progress",
+      type: "line",
+      source: "sel-progress",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": ["get", "color"],
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4, 16, 8],
+      },
+    });
+    map.addLayer({
+      id: "path-head",
+      type: "circle",
+      source: "sel-progress",
+      layout: { visibility: "none" },
+      paint: {
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 4, 16, 7],
+        "circle-color": "#ffffff",
+        "circle-stroke-color": ["get", "color"],
+        "circle-stroke-width": 3,
       },
     });
 
