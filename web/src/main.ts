@@ -117,6 +117,7 @@ let animFrameId: number | null = null;
 let mode: TravelMode = "drive";
 let hour = 8;
 let trafficOn = true;
+let keepFrontier = true;
 
 // ── Traffic overlay ───────────────────────────────────────────
 // Scans all edges once and stores the indices of arterials (class 0–2:
@@ -710,7 +711,8 @@ function playRouteAnimation() {
   const frontierMs = clamp(lastTrace.order.length * 0.6, 500, 3000) / speed;
   const pathMs = clamp(r.path.length * 8, 400, 1500) / speed;
   animateFrontier(lastTrace, frontierMs, () => {
-    if (mapReady) map.setLayoutProperty("search-frontier", "visibility", "none");
+    if (mapReady && !keepFrontier)
+      map.setLayoutProperty("search-frontier", "visibility", "none");
     if (mapReady && lastMeetNode !== null) {
       setData("meet-point", {
         type: "FeatureCollection",
@@ -1393,6 +1395,16 @@ function wireControls() {
     if (!mapReady) return;
     for (const ly of ["place-poi", "area-labels"]) {
       map.setLayoutProperty(ly, "visibility", vis);
+    }
+  });
+
+  const keepFrontierInput = $("keepfrontier") as HTMLInputElement;
+  keepFrontierInput.addEventListener("change", () => {
+    keepFrontier = keepFrontierInput.checked;
+    // Turning it off mid-view should clear any dots left over from the
+    // last animation rather than waiting for the next route calculation.
+    if (!keepFrontier && mapReady) {
+      map.setLayoutProperty("search-frontier", "visibility", "none");
     }
   });
 
