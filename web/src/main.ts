@@ -1458,6 +1458,10 @@ function wireControls() {
 }
 
 async function boot() {
+  // Kick off the places fetch immediately so it overlaps with the CPU-heavy
+  // graph/restriction/router/model setup below instead of waiting behind it.
+  const placesPromise = loadPlaces();
+
   setHint("Loading graph…");
   graph = await loadGraph();
   // Node count of the as-exported graph — alt.bin/ch.bin are indexed by it
@@ -1543,7 +1547,7 @@ async function boot() {
     );
   };
 
-  places = await loadPlaces();
+  places = await placesPromise;
   updateModeNote();
 
   const b = graph.bounds;
