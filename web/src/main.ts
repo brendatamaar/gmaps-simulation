@@ -438,7 +438,17 @@ function fitToRoute() {
 // frontier to animate and falls straight through to the instant render.
 
 const ANIM_SPEED_STEPS = [0.5, 1, 2, 4];
-const MAX_FRONTIER_POINTS = 20_000; // subsample pathological searches so a frame never has to draw more than this
+// Subsample pathological searches so a frame never has to draw more than
+// this. Kept modest (rather than just relying on frame throttling below)
+// because every reveal update re-buckets the whole GeoJSON source, so the
+// point count is a direct multiplier on that cost too.
+const MAX_FRONTIER_POINTS = 6_000;
+// Minimum spacing between search-frontier reveal updates. map.setFilter()
+// re-buckets every feature in the source, so firing it on every
+// requestAnimationFrame (up to ~60/sec) with thousands of points is what
+// actually causes the animation to lag — throttling to ~24/sec cuts that
+// cost by more than half with no visible loss of smoothness.
+const FRONTIER_UPDATE_INTERVAL_MS = 1000 / 24;
 
 function getAnimSpeedMultiplier(): number {
   const el = document.getElementById("anim-speed") as HTMLInputElement | null;
@@ -520,11 +530,23 @@ function animateFrontier(
   map.setFilter("search-frontier", ["<=", ["get", "idx"], -1]);
 
   const t0 = performance.now();
+  let lastRevealed = -1;
+  let lastUpdate = 0;
   function tick() {
-    const raw = Math.min(1, (performance.now() - t0) / durationMs);
+    const now = performance.now();
+    const raw = Math.min(1, (now - t0) / durationMs);
+    const done = raw >= 1;
     const eased = easeOutCubic(raw);
-    map.setFilter("search-frontier", ["<=", ["get", "idx"], Math.round(eased * (n - 1))]);
-    if (raw < 1) {
+    const revealed = Math.round(eased * (n - 1));
+    if (
+      revealed !== lastRevealed &&
+      (done || now - lastUpdate >= FRONTIER_UPDATE_INTERVAL_MS)
+    ) {
+      map.setFilter("search-frontier", ["<=", ["get", "idx"], revealed]);
+      lastRevealed = revealed;
+      lastUpdate = now;
+    }
+    if (!done) {
       animFrameId = requestAnimationFrame(tick);
     } else {
       animFrameId = null;
