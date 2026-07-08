@@ -3,11 +3,19 @@ import "maplibre-gl/dist/maplibre-gl.css";
 
 import { loadGraph, nearestNode, haversine, type Graph } from "./graph.ts";
 import {
-  initRouter, loadRestrictions, emptyRestrictions, pathViolatesRestriction,
-  type Router, type Restrictions,
+  initRouter,
+  loadRestrictions,
+  emptyRestrictions,
+  pathViolatesRestriction,
+  type Router,
+  type Restrictions,
 } from "./router.ts";
 import { applyRestrictionSplit } from "./restriction-split.ts";
-import { computeRoutes, computeRoutesBidir, type RouteOption } from "./routing.ts";
+import {
+  computeRoutes,
+  computeRoutesBidir,
+  type RouteOption,
+} from "./routing.ts";
 import { buildRevCSR, type RevCSR } from "./bidir-router.ts";
 import type { SearchTrace } from "./search-trace.ts";
 import { loadAlt, type AltData } from "./alt.ts";
@@ -115,14 +123,18 @@ let trafficOn = true;
 // motorway, trunk, primary). ~100K edges in Jakarta — fast to iterate later.
 function initOverlayEdges() {
   const { n, offsets, classes } = graph;
-  const froms: number[] = [], eis: number[] = [];
+  const froms: number[] = [],
+    eis: number[] = [];
   for (let i = 0; i < n; i++) {
     for (let ei = offsets[i]!; ei < offsets[i + 1]!; ei++) {
-      if (classes[ei]! <= 2) { froms.push(i); eis.push(ei); }
+      if (classes[ei]! <= 2) {
+        froms.push(i);
+        eis.push(ei);
+      }
     }
   }
   overlayFroms = new Int32Array(froms);
-  overlayEis   = new Int32Array(eis);
+  overlayEis = new Int32Array(eis);
 }
 
 // Build a GeoJSON FeatureCollection of arterial edges colored by congestion.
@@ -185,7 +197,9 @@ function selectedFC(revealCount = Infinity, segMult?: Float64Array) {
   const r = routes[selected];
   if (!r) return { type: "FeatureCollection" as const, features: [] };
   const colorByTraffic = mode === "drive" && trafficOn;
-  const mult = segMult ?? segmentMultipliers(graph, model, r.path, hour, trafficOn, mode, r.edges);
+  const mult =
+    segMult ??
+    segmentMultipliers(graph, model, r.path, hour, trafficOn, mode, r.edges);
   const features = [];
   const end = Math.min(r.path.length, Math.max(2, revealCount));
   for (let k = 1; k < end; k++) {
@@ -383,7 +397,11 @@ function stopAnimation() {
   }
 }
 
-function animateFrontier(trace: SearchTrace, durationMs: number, onDone: () => void) {
+function animateFrontier(
+  trace: SearchTrace,
+  durationMs: number,
+  onDone: () => void,
+) {
   let order = trace.order;
   let side = trace.side;
   if (order.length > MAX_FRONTIER_POINTS) {
@@ -409,7 +427,10 @@ function animateFrontier(trace: SearchTrace, durationMs: number, onDone: () => v
     features[i] = {
       type: "Feature" as const,
       properties: { idx: i, side: side[i]! },
-      geometry: { type: "Point" as const, coordinates: [graph.lons[node]!, graph.lats[node]!] },
+      geometry: {
+        type: "Point" as const,
+        coordinates: [graph.lons[node]!, graph.lats[node]!],
+      },
     };
   }
   setData("search-frontier", { type: "FeatureCollection", features });
@@ -437,7 +458,15 @@ function animatePathDraw(durationMs: number, onDone: () => void) {
     onDone();
     return;
   }
-  const segMult = segmentMultipliers(graph, model, r.path, hour, trafficOn, mode, r.edges);
+  const segMult = segmentMultipliers(
+    graph,
+    model,
+    r.path,
+    hour,
+    trafficOn,
+    mode,
+    r.edges,
+  );
   const fc = selectedFC(Infinity, segMult);
   const segCount = fc.features.length; // = r.path.length - 1
   if (segCount === 0) {
@@ -452,8 +481,14 @@ function animatePathDraw(durationMs: number, onDone: () => void) {
   const cumLen = new Float64Array(segCount);
   let acc = 0;
   for (let k = 1; k < r.path.length; k++) {
-    const a = r.path[k - 1]!, b = r.path[k]!;
-    const d = haversine(graph.lats[a]!, graph.lons[a]!, graph.lats[b]!, graph.lons[b]!);
+    const a = r.path[k - 1]!,
+      b = r.path[k]!;
+    const d = haversine(
+      graph.lats[a]!,
+      graph.lons[a]!,
+      graph.lats[b]!,
+      graph.lons[b]!,
+    );
     segLen[k - 1] = d;
     acc += d;
     cumLen[k - 1] = acc;
@@ -472,7 +507,9 @@ function animatePathDraw(durationMs: number, onDone: () => void) {
   // Index of the last fully-revealed segment for a given travelled distance
   // (binary search over the monotonic cumulative-length array).
   function completedSegFor(target: number): number {
-    let lo = 0, hi = segCount - 1, ans = -1;
+    let lo = 0,
+      hi = segCount - 1,
+      ans = -1;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
       if (cumLen[mid]! <= target) {
@@ -498,7 +535,11 @@ function animatePathDraw(durationMs: number, onDone: () => void) {
     const eased = easeOutCubic(raw);
     const target = eased * totalLen;
     const completed = completedSegFor(target);
-    const filter: maplibregl.FilterSpecification = ["<=", ["get", "idx"], completed];
+    const filter: maplibregl.FilterSpecification = [
+      "<=",
+      ["get", "idx"],
+      completed,
+    ];
     map.setFilter("sel-casing", filter);
     map.setFilter("sel-line", filter);
 
@@ -506,9 +547,12 @@ function animatePathDraw(durationMs: number, onDone: () => void) {
     if (raw < 1 && partialIdx < segCount) {
       const segStart = completed >= 0 ? cumLen[completed]! : 0;
       const frac = clamp((target - segStart) / (segLen[partialIdx] || 1), 0, 1);
-      const aNode = r.path[partialIdx]!, bNode = r.path[partialIdx + 1]!;
-      const lon = graph.lons[aNode]! + (graph.lons[bNode]! - graph.lons[aNode]!) * frac;
-      const lat = graph.lats[aNode]! + (graph.lats[bNode]! - graph.lats[aNode]!) * frac;
+      const aNode = r.path[partialIdx]!,
+        bNode = r.path[partialIdx + 1]!;
+      const lon =
+        graph.lons[aNode]! + (graph.lons[bNode]! - graph.lons[aNode]!) * frac;
+      const lat =
+        graph.lats[aNode]! + (graph.lats[bNode]! - graph.lats[aNode]!) * frac;
       const color = colorFor(partialIdx);
       setData("sel-progress", {
         type: "FeatureCollection",
@@ -607,17 +651,19 @@ function updateModeNote() {
     text = `${mode === "walk" ? "Walking" : "Cycling"} ignores traffic — a flat speed on every road.`;
   } else if (trafficOn) {
     text = "Bidir A* + ALT with live time-of-day traffic weights.";
-    if (lastBidir) text += ` Bidir+ALT: ${lastBidir.settled.toLocaleString()} settled, ${lastBidir.queryMs.toFixed(1)} ms.`;
-    else if (lastAstar) text += ` A*: ${lastAstar.settled.toLocaleString()} settled, ${lastAstar.queryMs.toFixed(1)} ms.`;
+    if (lastBidir)
+      text += ` Bidir+ALT: ${lastBidir.settled.toLocaleString()} settled, ${lastBidir.queryMs.toFixed(1)} ms.`;
+    else if (lastAstar)
+      text += ` A*: ${lastAstar.settled.toLocaleString()} settled, ${lastAstar.queryMs.toFixed(1)} ms.`;
     text += altData ? "" : " ALT loading…";
-    text += " CH disabled (stale under live traffic).";
   } else {
     // drive + trafficOff
     if (!chData) {
       text = "CH loading… A* running free-flow in the meantime.";
     } else if (lastCH) {
       text = `CH: ${lastCH.settled.toLocaleString()} settled, ${lastCH.queryMs.toFixed(2)} ms`;
-      if (lastAstar) text += ` · A* ref: ${lastAstar.settled.toLocaleString()} settled, ${lastAstar.queryMs.toFixed(1)} ms`;
+      if (lastAstar)
+        text += ` · A* ref: ${lastAstar.settled.toLocaleString()} settled, ${lastAstar.queryMs.toFixed(1)} ms`;
     } else {
       text = "Free-flow CH precomputed graph. Search or click the map.";
     }
@@ -628,11 +674,19 @@ function updateModeNote() {
 // Single WASM A* query wrapped as a RouteOption. Assumes weights are already
 // filled for the desired scenario. Trims the synthetic arrival hop when the
 // destination is a restriction-split via node.
-function astarRouteOption(s: number, t: number, arrivalEnd: number | null): RouteOption | null {
+function astarRouteOption(
+  s: number,
+  t: number,
+  arrivalEnd: number | null,
+): RouteOption | null {
   const r = router.route(s, arrivalEnd ?? t, modeHScale(mode));
   if (!r) return null;
   let { path, edges } = r;
-  if (arrivalEnd !== null && path.length >= 2 && path[path.length - 1] === arrivalEnd) {
+  if (
+    arrivalEnd !== null &&
+    path.length >= 2 &&
+    path[path.length - 1] === arrivalEnd
+  ) {
     path = path.subarray(0, path.length - 1);
     edges = edges.subarray(0, edges.length - 1);
   }
@@ -680,16 +734,19 @@ function recomputeFull() {
     lastAstar = ar ? { settled: ar.nodesVisited, queryMs: ar.queryMs } : null;
 
     const chPath = cr ? new Int32Array(cr.path) : null;
-    const chBlocked = chPath !== null && pathViolatesRestriction(restrictionsData, chPath);
+    const chBlocked =
+      chPath !== null && pathViolatesRestriction(restrictionsData, chPath);
     if (chPath && !chBlocked) {
-      routes = [{
-        path: chPath,
-        edges: null, // CH edge ids live in its own edge space
-        etaSec: etaSeconds(cr!.dist),
-        distanceM: pathDistanceMeters(graph, chPath),
-        nodesVisited: cr!.settled,
-        queryMs: cr!.queryMs,
-      }];
+      routes = [
+        {
+          path: chPath,
+          edges: null, // CH edge ids live in its own edge space
+          etaSec: etaSeconds(cr!.dist),
+          distanceM: pathDistanceMeters(graph, chPath),
+          nodesVisited: cr!.settled,
+          queryMs: cr!.queryMs,
+        },
+      ];
       lastCH = { settled: cr!.settled, queryMs: cr!.queryMs };
     } else if (ar) {
       // CH crossed a forbidden turn (or found no path) — the A* result above
@@ -705,8 +762,20 @@ function recomputeFull() {
   } else if (mode === "drive" && trafficOn && rev !== null) {
     lastCH = null;
     const result = computeRoutesBidir(
-      graph, rev, router.weights, altData, router.restrictions, model,
-      startIdx, endIdx, hour, trafficOn, mode, undefined, true, arrivalEnd,
+      graph,
+      rev,
+      router.weights,
+      altData,
+      router.restrictions,
+      model,
+      startIdx,
+      endIdx,
+      hour,
+      trafficOn,
+      mode,
+      undefined,
+      true,
+      arrivalEnd,
     );
     routes = result.options;
     lastTrace = result.trace;
@@ -718,7 +787,16 @@ function recomputeFull() {
     lastCH = null;
     lastBidir = null;
     const result = computeRoutes(
-      graph, router, model, startIdx, endIdx, hour, trafficOn, mode, mode !== "drive", arrivalEnd,
+      graph,
+      router,
+      model,
+      startIdx,
+      endIdx,
+      hour,
+      trafficOn,
+      mode,
+      mode !== "drive",
+      arrivalEnd,
     );
     routes = result.options;
     lastTrace = result.trace;
@@ -756,16 +834,19 @@ function recomputePrimary() {
   if (useCH) {
     const cr = chRouter!.query(startIdx, endIdx);
     const chPath = cr ? new Int32Array(cr.path) : null;
-    const chBlocked = chPath !== null && pathViolatesRestriction(restrictionsData, chPath);
+    const chBlocked =
+      chPath !== null && pathViolatesRestriction(restrictionsData, chPath);
     if (chPath && !chBlocked) {
-      routes = [{
-        path: chPath,
-        edges: null,
-        etaSec: etaSeconds(cr!.dist),
-        distanceM: pathDistanceMeters(graph, chPath),
-        nodesVisited: cr!.settled,
-        queryMs: cr!.queryMs,
-      }];
+      routes = [
+        {
+          path: chPath,
+          edges: null,
+          etaSec: etaSeconds(cr!.dist),
+          distanceM: pathDistanceMeters(graph, chPath),
+          nodesVisited: cr!.settled,
+          queryMs: cr!.queryMs,
+        },
+      ];
       lastCH = { settled: cr!.settled, queryMs: cr!.queryMs };
     } else {
       // CH is restriction-unaware (see ch.ts) — fall back to A*, which respects
@@ -781,8 +862,20 @@ function recomputePrimary() {
     // insufficient: the optimal route can require iter 3 to surface when bidirRoute
     // raw-weight ordering and pathWeight re-score ordering disagree.
     const { options: primary } = computeRoutesBidir(
-      graph, rev, router.weights, altData, router.restrictions, model,
-      startIdx, endIdx, hour, trafficOn, mode, undefined, false, arrivalEnd,
+      graph,
+      rev,
+      router.weights,
+      altData,
+      router.restrictions,
+      model,
+      startIdx,
+      endIdx,
+      hour,
+      trafficOn,
+      mode,
+      undefined,
+      false,
+      arrivalEnd,
     );
     routes = primary.length > 0 ? [primary[0]!] : [];
     const r0 = routes[0];
@@ -1014,7 +1107,11 @@ function wireSearch(inputId: "origin" | "dest", suggId: string) {
     if (!p) return;
     input.value = p.name;
     close();
-    setEndpointDirect(inputId, nearestNode(graph, p.lat, p.lon, mode === 'drive' ? 3 : 7), p.name);
+    setEndpointDirect(
+      inputId,
+      nearestNode(graph, p.lat, p.lon, mode === "drive" ? 3 : 7),
+      p.name,
+    );
   }
 
   function open(results: Place[], q: string) {
@@ -1210,14 +1307,19 @@ async function boot() {
     graph = split.graph;
     arrivalOf = split.arrivalOf;
     altRemap = split.altRemap;
-    console.log(`[boot] restriction split: ${restrictionsData.viaCount} vias baked in (${graph.n.toLocaleString()} nodes, ${graph.e.toLocaleString()} edges)`);
+    console.log(
+      `[boot] restriction split: ${restrictionsData.viaCount} vias baked in (${graph.n.toLocaleString()} nodes, ${graph.e.toLocaleString()} edges)`,
+    );
   }
-  router = await initRouter(graph, split ? emptyRestrictions() : restrictionsData);
+  router = await initRouter(
+    graph,
+    split ? emptyRestrictions() : restrictionsData,
+  );
   model = precompute(graph);
   rev = buildRevCSR(graph);
   initOverlayEdges();
 
-  loadAlt(exportedN).then(a => {
+  loadAlt(exportedN).then((a) => {
     if (!a) return;
     a.remap = altRemap;
     altData = a;
@@ -1228,13 +1330,18 @@ async function boot() {
 
   // Load CH precomputed graph in the background — once ready, drive+trafficOff
   // queries switch from A* to CH automatically.
-  loadCH(exportedN).then(ch => {
+  loadCH(exportedN).then((ch) => {
     if (!ch) return;
-    chData   = ch;
+    chData = ch;
     chRouter = new CHRouter(ch);
     console.log(`[boot] CH ready: ${ch.n.toLocaleString()} nodes`);
     updateModeNote();
-    if (startIdx !== null && endIdx !== null && mode === "drive" && !trafficOn) {
+    if (
+      startIdx !== null &&
+      endIdx !== null &&
+      mode === "drive" &&
+      !trafficOn
+    ) {
       recomputeFull();
     }
   });
@@ -1254,13 +1361,17 @@ async function boot() {
     n: graph.n,
     e: graph.e,
   });
-  worker.onmessage = (evt: MessageEvent<{ cbdFactor: Float64Array; edgeDot: Float64Array }>) => {
+  worker.onmessage = (
+    evt: MessageEvent<{ cbdFactor: Float64Array; edgeDot: Float64Array }>,
+  ) => {
     const t0 = performance.now();
     model.cbdFactor = evt.data.cbdFactor;
-    model.edgeDot   = evt.data.edgeDot;
+    model.edgeDot = evt.data.edgeDot;
     worker.terminate();
     const ms = (performance.now() - t0).toFixed(0);
-    console.log(`[boot] BPR model ready (worker→main transfer+assign: ${ms} ms)`);
+    console.log(
+      `[boot] BPR model ready (worker→main transfer+assign: ${ms} ms)`,
+    );
     updateTrafficOverlay();
     if (startIdx !== null && endIdx !== null) recomputeFull();
     setHint(
