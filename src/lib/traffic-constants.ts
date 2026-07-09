@@ -49,7 +49,7 @@ export const ASSUMPTIONS = {
   // ── BPR speed-flow parameters ────────────────────────────
   // speed = free_flow / (1 + α × (V/C)^β)
   // Calibrated for Jakarta urban arterials: α=1.9, β=2.
-  // Source: MKJI 1997; Akçelik (1991) urban α≈1.5–2.0.
+  // Source: MKJI 1997; α≈1.5–2.0.
   bprAlpha: 1.9,
   bprBeta: 2,
 
@@ -61,23 +61,23 @@ export const ASSUMPTIONS = {
     0.05, // 01
     0.04, // 02
     0.04, // 03 — trough; speed should be ≈ free-flow
-    0.08, // 04 — Subuh prayer + early logistics start
+    0.08, // 04 — Early logistics start
     0.22, // 05 — pre-rush ramp
-    0.6,  // 06 — school/office ramp-up
-    0.9,  // 07 — AM peak ramp
-    1.0,  // 08 — AM peak apex (reference; ratio anchored here)
+    0.6, // 06 — school/office ramp-up
+    0.9, // 07 — AM peak ramp
+    1.0, // 08 — AM peak apex (reference; ratio anchored here)
     0.82, // 09 — post-peak tail
     0.65, // 10
     0.58, // 11
-    0.68, // 12 — lunch spike (warung runs, mall trips)
+    0.68, // 12 — lunch spike
     0.62, // 13
     0.55, // 14 — afternoon trough
-    0.58, // 15 — school dismissal
+    0.58, // 15 — school/office dismissal
     0.72, // 16 — PM ramp-up
     0.95, // 17 — PM peak
-    1.0,  // 18 — PM peak apex (equal to AM for Jakarta)
+    1.0, // 18 — PM peak apex (equal to AM for Jakarta)
     0.83, // 19
-    0.6,  // 20
+    0.6, // 20
     0.42, // 21
     0.25, // 22
     0.15, // 23
@@ -88,30 +88,30 @@ export const ASSUMPTIONS = {
   // dot ∈ [−1, +1]: +1 = points toward CBD, −1 = away from CBD.
   directionalBoost: 0.45,
   amPmShape: [
-     0.00, // 00 — overnight: no directional bias
-     0.00, // 01
-     0.00, // 02
-     0.00, // 03
-     0.00, // 04
-     0.10, // 05 — early inbound ramp
-     0.45, // 06 — inbound growing
-     0.80, // 07 — strong inbound
-     1.00, // 08 — AM peak: max inbound bias
-     0.70, // 09 — inbound fading
-     0.25, // 10
-     0.05, // 11
-     0.00, // 12 — midday: no directional bias
-     0.00, // 13
-    -0.10, // 14 — outbound starts
+    0.0, // 00 — overnight: no directional bias
+    0.0, // 01
+    0.0, // 02
+    0.0, // 03
+    0.0, // 04
+    0.1, // 05 — early inbound ramp
+    0.45, // 06 — inbound growing
+    0.8, // 07 — strong inbound
+    1.0, // 08 — AM peak: max inbound bias
+    0.7, // 09 — inbound fading
+    0.25, // 10
+    0.05, // 11
+    0.0, // 12 — midday: no directional bias
+    0.0, // 13
+    -0.1, // 14 — outbound starts
     -0.35, // 15 — school dismissal, outbound building
     -0.65, // 16 — PM ramp
     -0.85, // 17 — strong outbound
-    -1.00, // 18 — PM peak: max outbound bias
-    -0.70, // 19 — outbound fading
+    -1.0, // 18 — PM peak: max outbound bias
+    -0.7, // 19 — outbound fading
     -0.25, // 20
     -0.05, // 21
-     0.00, // 22
-     0.00, // 23
+    0.0, // 22
+    0.0, // 23
   ] as const,
 
   // ── Noise ────────────────────────────────────────────────
