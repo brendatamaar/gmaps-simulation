@@ -629,14 +629,27 @@
       /* ── Narrow screens: toolbar wraps, fields stack, results move under the map ── */
       @media (max-width: 760px) {
         #app {
-          height: min(88dvh, 860px);
+          height: min(90dvh, 880px);
+        }
+        #toolbar {
+          position: relative;
         }
         /* Row 1: modes, settings, clear. Row 2: fields. Row 3: calculate. */
         .tb-actions {
           display: contents;
         }
         .settings-wrap {
+          position: static;
           margin-left: auto;
+        }
+        /* The settings dropdown becomes a full-width sheet under the toolbar */
+        .settings-panel {
+          left: 10px;
+          right: 10px;
+          top: calc(100% + 6px);
+          width: auto;
+          max-height: 60dvh;
+          overflow-y: auto;
         }
         #calc-route {
           order: 4;
@@ -652,7 +665,7 @@
         }
         .tb-fields-inputs {
           display: grid;
-          grid-template-columns: 1fr 28px;
+          grid-template-columns: 1fr auto;
           gap: 6px;
         }
         #origin {
@@ -684,6 +697,115 @@
           border-width: 1px 0 0;
           border-radius: 0;
           box-shadow: none;
+        }
+      }
+
+      /* ── Touch screens: finger-sized targets, 16px inputs (iOS zooms the page on smaller ones) ── */
+      @media (pointer: coarse) {
+        .field-input {
+          min-height: 44px;
+          font-size: 16px;
+        }
+        #modes button {
+          min-height: 36px;
+          padding: 0 14px;
+        }
+        .icon-btn {
+          width: 44px;
+          height: 44px;
+          font-size: 17px;
+        }
+        .swap-btn {
+          width: 40px;
+          height: 40px;
+          font-size: 16px;
+        }
+        #calc-route {
+          min-height: 44px;
+          font-size: 14px;
+        }
+        #anim-replay {
+          min-height: 40px;
+        }
+        .toggle {
+          min-height: 36px;
+          margin-bottom: 4px;
+        }
+        .sugg-item {
+          padding: 12px;
+        }
+        .route-card {
+          padding: 12px;
+        }
+        .steps-toggle {
+          min-height: 44px;
+        }
+      }
+
+      /* ── Toast: suggests a desktop browser on small screens ── */
+      .toast {
+        position: fixed;
+        left: 12px;
+        right: 12px;
+        bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+        z-index: 200;
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        max-width: 420px;
+        margin: 0 auto;
+        padding: 12px 8px 12px 14px;
+        border: 1px solid var(--color-leader);
+        border-radius: 10px;
+        background: var(--color-page);
+        color: var(--color-body);
+        font-size: 13px;
+        line-height: 1.55;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+        animation: toast-in 0.25s ease-out;
+      }
+      .toast[hidden] {
+        display: none;
+      }
+      .toast p {
+        flex: 1;
+        font-size: 13px;
+      }
+      .toast strong {
+        color: var(--color-ink);
+        font-weight: 500;
+      }
+      .toast button {
+        display: flex;
+        flex: none;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        margin-top: -6px;
+        border: 0;
+        border-radius: 50%;
+        background: transparent;
+        color: var(--color-quiet);
+        font-size: 16px;
+        cursor: pointer;
+        transition:
+          background 0.15s,
+          color 0.15s;
+      }
+      .toast button:hover {
+        background: var(--color-raised);
+        color: var(--color-ink);
+      }
+      @keyframes toast-in {
+        from {
+          opacity: 0;
+          transform: translateY(12px);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .toast {
+          animation: none;
         }
       }
     </style>
@@ -800,6 +922,14 @@
     <!-- Fixed-positioned outside the card so the dropdowns aren't clipped -->
     <div class="suggestions" id="origin-sugg" hidden></div>
     <div class="suggestions" id="dest-sugg" hidden></div>
+
+    <div class="toast" id="mobile-note" role="status" hidden>
+      <p>
+        <strong>Works best in a desktop browser.</strong> This runs a whole routing engine on your device and downloads
+        about 60 MB of map data, so it can be slow on a phone.
+      </p>
+      <button type="button" id="mobile-note-close" aria-label="Dismiss">✕</button>
+    </div>
 
     <footer class="site-footer">
       <a href="https://github.com/brendatamaar/gmaps-simulation">Source</a> ·

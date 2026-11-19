@@ -1494,7 +1494,39 @@ function wireControls() {
   wireSearch("dest", "dest-sugg");
 }
 
+// Phones: say once per visit that this is built for a desktop, and keep the heavy map overlay off by default.
+const SMALL_SCREEN = "(max-width: 760px), (pointer: coarse) and (max-width: 1024px)";
+function initMobileNote() {
+  if (!matchMedia(SMALL_SCREEN).matches) return;
+  // The traffic overlay is a lot of lines to draw; the checkbox in settings brings it back.
+  ($("showtraffic") as HTMLInputElement).checked = false;
+
+  const KEY = "route-sim-mobile-note";
+  try {
+    if (sessionStorage.getItem(KEY)) return;
+  } catch {
+    // storage blocked: just show it
+  }
+  const note = $("mobile-note");
+  const close = () => {
+    note.hidden = true;
+    document.removeEventListener("keydown", onKey);
+    try {
+      sessionStorage.setItem(KEY, "1");
+    } catch {
+      // ignore
+    }
+  };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") close();
+  };
+  $("mobile-note-close").addEventListener("click", close);
+  document.addEventListener("keydown", onKey);
+  note.hidden = false;
+}
+
 async function boot() {
+  initMobileNote();
   // Kick off the places fetch immediately so it overlaps with the CPU-heavy
   // graph/restriction/router/model setup below instead of waiting behind it.
   const placesPromise = loadPlaces();
