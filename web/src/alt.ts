@@ -1,3 +1,4 @@
+import { fetchAsset } from './fetch-asset.ts';
 // Browser ALT data loader and heuristic functions.
 // alt.bin layout: see src/export-alt.ts header comment.
 
@@ -19,7 +20,7 @@ export type AltData = {
 // misaligned bounds can be inadmissible, so reject rather than degrade.
 export async function loadAlt(expectedN: number): Promise<AltData | null> {
   try {
-    const resp = await fetch('alt.bin');
+    const resp = await fetchAsset('alt.bin');
     if (!resp.ok) { console.warn(`[alt] alt.bin not found (${resp.status})`); return null; }
     const ab  = await resp.arrayBuffer();
     const hdr = new Int32Array(ab, 0, 4);

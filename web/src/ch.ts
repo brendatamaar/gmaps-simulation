@@ -1,3 +1,4 @@
+import { fetchAsset } from './fetch-asset.ts';
 // Browser CH loader and bidirectional upward Dijkstra query.
 //
 // Loads web/public/ch.bin (produced by pnpm export:ch), reconstructs the
@@ -35,7 +36,7 @@ export type CHQueryResult = {
 // entirely, so reject it outright.
 export async function loadCH(expectedN: number): Promise<CHData | null> {
   try {
-    const resp = await fetch('ch.bin');
+    const resp = await fetchAsset('ch.bin');
     if (!resp.ok) {
       console.warn(`[ch] ch.bin fetch failed: ${resp.status}`);
       return null;

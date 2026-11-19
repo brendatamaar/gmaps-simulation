@@ -2,23 +2,66 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Jakarta Router — Directions</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Route Simulation | Labs</title>
+    <meta
+      name="description"
+      content="A routing engine built from scratch that runs entirely in the browser: A*, bidirectional ALT and Contraction Hierarchies over OpenStreetMap data of Jakarta, with a time-of-day traffic model."
+    />
+    <meta name="theme-color" content="#131313" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <link rel="icon" type="image/svg+xml" href="https://labs.brendatama.dev/_shared/favicon.svg" />
+    <!-- Shared labs look (tokens, fonts) + header/theme toggle. Absolute URLs so they also work in `vite dev`. -->
+    <link rel="stylesheet" href="https://labs.brendatama.dev/_shared/folio.css" />
+    <script src="https://labs.brendatama.dev/_shared/labs-header.js"></script>
     <style>
-      * {
-        box-sizing: border-box;
+      /* App styles. Tokens, fonts, the 704px column, header and footer come from the shared labs
+         stylesheet; everything below only adds the map workspace, using the same tokens. */
+      :root {
+        --ok: #6fd18c; /* fastest-route green */
+        --origin: #34a853;
+        --dest: #ea4335;
+        --ctl-filter: invert(1); /* flips MapLibre's dark-on-white control icons */
       }
-      html,
-      body {
-        margin: 0;
-        height: 100%;
-        font-family: "Roboto", "Segoe UI", system-ui, Arial, sans-serif;
-        color: #202124;
-        background: #e8eaed;
+      @media (prefers-color-scheme: light) {
+        :root:not([data-theme='dark']) {
+          --ok: #188038;
+          --ctl-filter: none;
+        }
+      }
+      :root[data-theme='light'] {
+        --ok: #188038;
+        --ctl-filter: none;
+      }
+
+      .intro {
+        padding-top: 40px;
+      }
+      .intro .lede {
+        margin-bottom: 24px;
+      }
+
+      /* ── Workspace: one bordered card holding toolbar, status line and map ── */
+      .stage {
+        width: min(1100px, calc(100% - 32px));
+        margin: 0 auto;
       }
       #app {
-        position: fixed;
-        inset: 0;
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        height: clamp(560px, 78dvh, 820px);
+        overflow: hidden;
+        border: 1px solid var(--color-ring);
+        border-radius: 10px;
+        background: var(--color-page);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      #viewport {
+        position: relative;
+        flex: 1;
+        min-height: 0;
       }
       #map {
         position: absolute;
@@ -28,73 +71,70 @@
       .maplibregl-ctrl-attrib {
         font-size: 10px;
       }
+      #app .maplibregl-ctrl-group {
+        background: var(--color-raised);
+        border: 1px solid var(--color-ring);
+        box-shadow: none;
+      }
+      #app .maplibregl-ctrl-group button + button {
+        border-top-color: var(--color-ring);
+      }
+      #app .maplibregl-ctrl-icon {
+        filter: var(--ctl-filter);
+      }
+
+      button,
+      input {
+        font-family: inherit;
+      }
 
       /* ── Toolbar ─────────────────────────────────────────────────────── */
       #toolbar {
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        z-index: 3;
-        height: 60px;
-        display: flex;
-        align-items: center;
-        gap: 16px;
-        padding: 0 16px;
-        background: #fff;
-        border-bottom: 1px solid #dadce0;
-        box-shadow:
-          0 1px 2px rgba(60, 64, 67, 0.15),
-          0 2px 6px rgba(60, 64, 67, 0.1);
-      }
-
-      .tb-brand {
         flex: none;
-        font-size: 15px;
-        font-weight: 600;
-        white-space: nowrap;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px 12px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--color-ring);
+        background: var(--color-page);
       }
 
-      /* Mode selector — segmented pill control */
+      /* Mode selector: pill group */
       .modes-group {
         display: flex;
         flex: none;
-        background: #f1f3f4;
-        border-radius: 10px;
-        padding: 3px;
         gap: 2px;
+        padding: 2px;
+        border: 1px solid var(--color-ring);
+        border-radius: 999px;
       }
       #modes button {
-        padding: 7px 10px;
-        border: none;
+        min-height: 28px;
+        padding: 0 12px;
+        border: 0;
+        border-radius: 999px;
         background: transparent;
-        cursor: pointer;
-        color: #5f6368;
+        color: var(--color-quiet);
         font-size: 13px;
         white-space: nowrap;
-        border-radius: 8px;
-        font-family: inherit;
+        cursor: pointer;
         transition:
           background 0.15s,
-          color 0.15s,
-          box-shadow 0.15s;
+          color 0.15s;
       }
       #modes button:hover:not(.active) {
-        background: rgba(0, 0, 0, 0.05);
-        color: #3c4043;
+        color: var(--color-ink);
       }
       #modes button.active {
-        background: #fff;
-        color: #1a73e8;
+        background: var(--color-raised);
+        color: var(--color-ink);
         font-weight: 500;
-        box-shadow:
-          0 1px 3px rgba(60, 64, 67, 0.25),
-          0 0 0 1px rgba(60, 64, 67, 0.08);
       }
 
-      /* Origin / destination fields, laid out inline in the toolbar */
+      /* Origin / destination fields */
       .tb-fields {
-        flex: 1 1 auto;
+        flex: 1 1 360px;
         min-width: 0;
         max-width: 640px;
         display: flex;
@@ -107,11 +147,11 @@
         flex: none;
       }
       .dot.o {
-        background: #34a853;
+        background: var(--origin);
         border-radius: 50%;
       }
       .dot.d {
-        background: #ea4335;
+        background: var(--dest);
         border-radius: 2px;
       }
       .tb-fields-inputs {
@@ -121,41 +161,36 @@
         align-items: center;
         gap: 8px;
       }
-      /* Search inputs */
       .field-input {
         flex: 1;
         min-width: 0;
         width: 100%;
-        padding: 8px 10px;
-        background: #f1f3f4;
-        border: 1.5px solid transparent;
+        min-height: 32px;
+        padding: 0 10px;
+        border: 1px solid var(--color-ring);
         border-radius: 8px;
+        background: var(--color-raised);
+        color: var(--color-ink);
         font-size: 13px;
-        font-family: inherit;
-        color: #3c4043;
         outline: none;
-        transition:
-          border-color 0.15s,
-          background 0.15s;
+        transition: border-color 0.15s;
       }
       .field-input::placeholder {
-        color: #80868b;
+        color: var(--color-quiet);
       }
       .field-input:focus {
-        background: #fff;
-        border-color: #1a73e8;
+        border-color: var(--color-quiet);
       }
 
-      /* Suggestion dropdown — fixed-positioned via JS to escape toolbar overflow */
+      /* Suggestion dropdown: fixed-positioned via JS to escape the card's overflow clipping */
       .suggestions {
         position: fixed;
-        background: #fff;
-        border-radius: 10px;
-        box-shadow:
-          0 4px 12px rgba(60, 64, 67, 0.25),
-          0 1px 3px rgba(60, 64, 67, 0.15);
         z-index: 100;
         overflow: hidden;
+        border: 1px solid var(--color-ring);
+        border-radius: 10px;
+        background: var(--color-page);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
       }
       .suggestions[hidden] {
         display: none;
@@ -171,108 +206,99 @@
       }
       .sugg-item:hover,
       .sugg-item.active {
-        background: #f1f3f4;
+        background: var(--color-raised);
       }
       .sugg-dot {
         width: 8px;
         height: 8px;
-        border-radius: 50%;
         flex: none;
         align-self: flex-start;
-        margin-top: 4px;
+        margin-top: 6px;
+        border-radius: 50%;
       }
       .sugg-text {
         flex: 1;
         min-width: 0;
       }
       .sugg-name {
-        color: #202124;
-        white-space: nowrap;
         overflow: hidden;
+        color: var(--color-body);
         text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .sugg-name strong {
+        color: var(--color-ink);
         font-weight: 600;
-        color: #1a73e8;
+      }
+      .sugg-addr,
+      .sugg-kind {
+        color: var(--color-quiet);
+        font-size: 11px;
       }
       .sugg-addr {
-        color: #80868b;
-        font-size: 11px;
         margin-top: 1px;
-        white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .sugg-kind {
-        color: #80868b;
-        font-size: 11px;
-        white-space: nowrap;
         flex: none;
         align-self: flex-start;
         margin-top: 2px;
+        white-space: nowrap;
       }
-      .swap-btn {
-        background: #f1f3f4;
-        border: none;
-        border-radius: 50%;
-        width: 28px;
-        height: 28px;
-        cursor: pointer;
-        font-size: 15px;
-        color: #5f6368;
+
+      .swap-btn,
+      .icon-btn {
         display: flex;
+        flex: none;
         align-items: center;
         justify-content: center;
-        flex: none;
+        border: 1px solid var(--color-ring);
+        border-radius: 50%;
+        background: transparent;
+        color: var(--color-quiet);
+        cursor: pointer;
         transition:
           background 0.15s,
-          color 0.15s;
+          color 0.15s,
+          border-color 0.15s;
       }
-      .swap-btn:hover {
-        background: #e8f0fe;
-        color: #1a73e8;
+      .swap-btn {
+        width: 28px;
+        height: 28px;
+        font-size: 14px;
+      }
+      .icon-btn {
+        width: 32px;
+        height: 32px;
+        min-width: 0;
+        min-height: 0;
+        padding: 0;
+        font-size: 15px;
+      }
+      .swap-btn:hover,
+      .icon-btn:hover {
+        border-color: var(--color-leader);
+        background: var(--color-raised);
+        color: var(--color-ink);
+      }
+      .icon-btn.active {
+        background: var(--color-raised);
+        color: var(--color-ink);
+      }
+      #clear:hover {
+        color: var(--dest);
       }
 
       /* Right-hand toolbar actions: settings, calculate, clear */
       .tb-actions {
-        flex: none;
         display: flex;
+        flex: none;
         align-items: center;
         gap: 8px;
         margin-left: auto;
       }
-      .icon-btn {
-        width: 36px;
-        height: 36px;
-        flex: none;
-        border: none;
-        border-radius: 50%;
-        background: #f1f3f4;
-        color: #5f6368;
-        font-size: 16px;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition:
-          background 0.15s,
-          color 0.15s;
-      }
-      .icon-btn:hover {
-        background: #e8eaed;
-        color: #3c4043;
-      }
-      .icon-btn.active {
-        background: #e8f0fe;
-        color: #1a73e8;
-      }
-      #clear {
-        color: #c5221f;
-      }
-      #clear:hover {
-        background: #fce8e8;
-      }
-
       .settings-wrap {
         position: relative;
         flex: none;
@@ -281,106 +307,106 @@
         position: absolute;
         top: calc(100% + 8px);
         right: 0;
-        width: 280px;
-        background: #fff;
-        border-radius: 12px;
-        box-shadow:
-          0 2px 6px rgba(60, 64, 67, 0.3),
-          0 6px 20px rgba(60, 64, 67, 0.2);
-        padding: 14px 16px;
         z-index: 4;
+        width: 280px;
+        padding: 14px 16px;
+        border: 1px solid var(--color-ring);
+        border-radius: 10px;
+        background: var(--color-page);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
       }
       .settings-panel[hidden] {
         display: none;
       }
 
-      /* Departure controls (inside the settings dropdown) */
+      /* Departure + animation sliders (inside the settings dropdown) */
       .time-row {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        margin-bottom: 8px;
+        margin-bottom: 6px;
       }
       .time-label {
         display: flex;
         align-items: center;
         gap: 6px;
+        color: var(--color-quiet);
         font-size: 13px;
-        color: #5f6368;
       }
       .ctrl-icon {
-        font-size: 14px;
+        font-size: 13px;
       }
       #hourval,
       #animspeedval {
-        font-size: 20px;
-        font-weight: 600;
-        color: #202124;
-        letter-spacing: -0.5px;
+        color: var(--color-ink);
+        font-size: 18px;
+        font-weight: 500;
+        letter-spacing: -0.3px;
       }
       #hour,
       #anim-speed {
         width: 100%;
         margin: 0 0 12px;
-        accent-color: #1a73e8;
+        accent-color: var(--color-pen);
       }
 
-      /* Custom toggle switches */
+      /* Toggle switches */
       .toggle {
         display: flex;
         align-items: center;
         gap: 10px;
+        margin-bottom: 10px;
+        color: var(--color-body);
+        font-size: 13px;
         cursor: pointer;
         user-select: none;
-        font-size: 13px;
-        color: #3c4043;
-        margin-bottom: 10px;
       }
       .toggle:last-of-type {
         margin-bottom: 0;
       }
-      .toggle input[type="checkbox"] {
+      .toggle input[type='checkbox'] {
         appearance: none;
         -webkit-appearance: none;
+        position: relative;
+        flex: none;
         width: 34px;
         height: 18px;
+        margin: 0;
         border-radius: 9px;
-        background: #bdc1c6;
-        position: relative;
+        background: var(--color-leader);
         cursor: pointer;
         transition: background 0.2s;
-        flex: none;
       }
-      .toggle input[type="checkbox"]::after {
-        content: "";
+      .toggle input[type='checkbox']::after {
+        content: '';
         position: absolute;
-        width: 14px;
-        height: 14px;
-        background: #fff;
-        border-radius: 50%;
         top: 2px;
         left: 2px;
-        transition: transform 0.2s;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: #fff;
         box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+        transition: transform 0.2s;
       }
-      .toggle input[type="checkbox"]:checked {
-        background: #1a73e8;
+      .toggle input[type='checkbox']:checked {
+        background: var(--color-pen);
       }
-      .toggle input[type="checkbox"]:checked::after {
+      .toggle input[type='checkbox']:checked::after {
         transform: translateX(16px);
       }
-      .toggle input[type="checkbox"]:disabled {
-        background: #e8eaed;
+      .toggle input[type='checkbox']:disabled {
+        opacity: 0.4;
         cursor: not-allowed;
       }
 
-      /* Traffic legend — inline below the traffic toggle */
+      /* Traffic legend: inline below the traffic toggle */
       .traffic-legend {
         display: flex;
         align-items: center;
         gap: 6px;
         margin: -4px 0 10px 44px;
-        color: #5f6368;
+        color: var(--color-quiet);
         font-size: 11px;
       }
       .bar {
@@ -390,76 +416,68 @@
         background: linear-gradient(90deg, #34a853, #f9ab00, #ea4335, #7f0000);
       }
 
-      /* ── Status bar ──────────────────────────────────────────────────── */
+      /* ── Status line ─────────────────────────────────────────────────── */
       #status-bar {
-        position: fixed;
-        top: 60px;
-        left: 0;
-        right: 0;
-        z-index: 2;
-        padding: 5px 16px;
-        background: #f8f9fa;
-        border-bottom: 1px solid #f1f3f4;
+        flex: none;
+        padding: 6px 12px;
+        border-bottom: 1px solid var(--color-ring);
+        color: var(--color-quiet);
         font-size: 12px;
-        line-height: 1.4;
+        line-height: 1.45;
       }
       #hint {
-        color: #5f6368;
         min-height: 17px;
       }
       #modenote {
-        color: #9aa0a6;
-        font-size: 11px;
         min-height: 15px;
+        font-size: 11px;
+        opacity: 0.8;
       }
 
-      /* ── Results panel ───────────────────────────────────────────────── */
+      /* ── Results panel: floats over the map on wide screens, sits below it on narrow ones ── */
       #results {
-        position: fixed;
-        top: 104px;
-        left: 14px;
+        position: absolute;
+        top: 12px;
+        left: 12px;
         z-index: 2;
-        width: 340px;
-        max-height: calc(100vh - 118px);
         display: flex;
         flex-direction: column;
-        background: #fff;
-        border-radius: 12px;
-        box-shadow:
-          0 2px 6px rgba(60, 64, 67, 0.3),
-          0 6px 20px rgba(60, 64, 67, 0.2);
+        width: 340px;
+        max-height: calc(100% - 24px);
         overflow: hidden;
+        border: 1px solid var(--color-ring);
+        border-radius: 10px;
+        background: var(--color-page);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
       }
       #results.hidden {
         display: none;
       }
-
-      /* Route cards with left color stripe */
       .scroll {
         overflow-y: auto;
       }
       #routes {
-        padding: 8px 12px 4px;
+        padding: 8px 8px 4px;
       }
       .route-card {
         display: flex;
         flex-direction: column;
-        gap: 3px;
-        padding: 10px 12px;
-        border-radius: 10px;
-        border: 1.5px solid transparent;
-        cursor: pointer;
+        gap: 2px;
         margin-bottom: 4px;
+        padding: 10px 12px;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        cursor: pointer;
         transition:
           background 0.1s,
           border-color 0.1s;
       }
       .route-card:hover {
-        background: #f8f9fa;
+        background: var(--color-raised);
       }
       .route-card.sel {
-        background: #e8f0fe;
-        border-color: #1a73e8;
+        border-color: var(--color-leader);
+        background: var(--color-raised);
       }
       .route-card .eta-row {
         display: flex;
@@ -469,28 +487,27 @@
       .route-card .eta {
         font-size: 18px;
         font-weight: 500;
-        color: #188038;
       }
       .route-card .badge {
+        padding: 0 8px;
+        border: 1px solid var(--color-leader);
+        border-radius: 999px;
+        color: var(--ok);
         font-size: 10px;
         font-weight: 600;
-        color: #188038;
-        background: #e6f4ea;
-        padding: 2px 8px;
-        border-radius: 10px;
         white-space: nowrap;
       }
       .route-card .meta {
+        color: var(--color-quiet);
         font-size: 12px;
-        color: #5f6368;
-        line-height: 1.4;
+        line-height: 1.5;
       }
       .route-card .meta b {
-        color: #3c4043;
+        color: var(--color-body);
         font-weight: 500;
       }
 
-      /* Turn-by-turn steps — collapsible */
+      /* Turn-by-turn steps: collapsible */
       .steps-section[hidden] {
         display: none;
       }
@@ -500,37 +517,36 @@
         justify-content: space-between;
         width: 100%;
         padding: 10px 12px;
+        border: 0;
+        border-top: 1px solid var(--color-ring);
         background: transparent;
-        border: none;
-        border-top: 1px solid #f1f3f4;
-        cursor: pointer;
-        font-family: inherit;
+        color: var(--color-body);
         font-size: 13px;
         font-weight: 500;
-        color: #3c4043;
         text-align: left;
+        cursor: pointer;
       }
       .steps-toggle:hover {
-        background: #f8f9fa;
+        background: var(--color-raised);
       }
       .steps-toggle .chevron {
-        color: #5f6368;
+        color: var(--color-quiet);
         font-size: 11px;
         transition: transform 0.2s;
       }
-      .steps-toggle[aria-expanded="true"] .chevron {
+      .steps-toggle[aria-expanded='true'] .chevron {
         transform: rotate(180deg);
       }
       #steps {
+        max-height: 2000px;
         padding: 4px 8px 10px;
         overflow: hidden;
-        max-height: 2000px;
         transition: max-height 0.2s ease;
       }
       #steps.collapsed {
+        max-height: 0;
         padding-top: 0;
         padding-bottom: 0;
-        max-height: 0;
       }
       .step {
         display: grid;
@@ -538,20 +554,20 @@
         align-items: start;
         gap: 8px;
         padding: 9px 8px;
-        border-top: 1px solid #f1f3f4;
+        border-top: 1px solid var(--color-ring);
         font-size: 13px;
       }
       .step .g {
-        color: #5f6368;
+        color: var(--color-quiet);
         font-size: 15px;
-        text-align: center;
         line-height: 1.2;
+        text-align: center;
       }
       .step .t {
-        color: #3c4043;
+        color: var(--color-body);
       }
       .step .d {
-        color: #80868b;
+        color: var(--color-quiet);
         font-size: 12px;
         white-space: nowrap;
       }
@@ -563,187 +579,232 @@
       }
       #anim-replay {
         flex: 1;
-        padding: 8px 10px;
-        cursor: pointer;
+        min-height: 32px;
+        padding: 0 10px;
+        border: 1px solid var(--color-ring);
+        border-radius: 999px;
+        background: transparent;
+        color: var(--color-body);
         font-size: 12px;
-        font-family: inherit;
-        background: #f1f3f4;
-        color: #3c4043;
-        border: none;
-        border-radius: 8px;
         white-space: nowrap;
+        cursor: pointer;
+        transition: background 0.15s;
       }
       #anim-replay:hover {
-        background: #e8eaed;
+        background: var(--color-raised);
       }
 
-      /* Calculate Route button */
+      /* Calculate Route: same pill as the other labs primary buttons */
       #calc-route {
         flex: none;
-        padding: 9px 18px;
-        cursor: pointer;
-        font-size: 14px;
-        font-family: inherit;
-        background: #1a73e8;
-        color: #fff;
-        border: none;
-        border-radius: 8px;
+        min-height: 32px;
+        padding: 0 16px;
+        border: 0;
+        border-radius: 999px;
+        background: var(--color-ink);
+        color: var(--color-page);
+        font-size: 13px;
         font-weight: 500;
         white-space: nowrap;
-        transition:
-          background 0.15s,
-          opacity 0.15s;
+        cursor: pointer;
+        transition: opacity 0.15s;
       }
       #calc-route:hover:not(:disabled) {
-        background: #1558b0;
+        opacity: 0.8;
       }
       #calc-route:disabled {
-        opacity: 0.45;
+        opacity: 0.4;
         cursor: not-allowed;
       }
 
-      /* Footer (inside the results panel) — holds the animation controls */
+      /* Footer (inside the results panel): holds the animation controls */
       .foot {
-        padding: 10px 16px 14px;
-        border-top: 1px solid #f1f3f4;
+        padding: 10px 12px 12px;
+        border-top: 1px solid var(--color-ring);
       }
       .foot:empty {
         display: none;
       }
+
+      /* ── Narrow screens: toolbar wraps, fields stack, results move under the map ── */
+      @media (max-width: 760px) {
+        #app {
+          height: min(88dvh, 860px);
+        }
+        /* Row 1: modes, settings, clear. Row 2: fields. Row 3: calculate. */
+        .tb-actions {
+          display: contents;
+        }
+        .settings-wrap {
+          margin-left: auto;
+        }
+        #calc-route {
+          order: 4;
+          flex: 1 1 100%;
+        }
+        .tb-fields {
+          order: 3;
+          flex: 1 1 100%;
+          max-width: none;
+        }
+        .tb-fields .dot {
+          display: none;
+        }
+        .tb-fields-inputs {
+          display: grid;
+          grid-template-columns: 1fr 28px;
+          gap: 6px;
+        }
+        #origin {
+          grid-area: 1 / 1;
+        }
+        #dest {
+          grid-area: 2 / 1;
+        }
+        #swap {
+          grid-area: 1 / 2 / 3 / 3;
+          align-self: center;
+        }
+        #viewport {
+          display: flex;
+          flex-direction: column;
+        }
+        #map {
+          position: relative;
+          flex: 1 1 0;
+          min-height: 200px;
+        }
+        #results {
+          position: relative;
+          top: auto;
+          left: auto;
+          flex: none;
+          width: auto;
+          max-height: 46%;
+          border-width: 1px 0 0;
+          border-radius: 0;
+          box-shadow: none;
+        }
+      }
     </style>
   </head>
   <body>
-    <div id="app">
-      <div id="map"></div>
+    <div class="col">
+      <div data-labs-header></div>
 
-      <header id="toolbar">
-        <div class="tb-brand">Route Simulation</div>
+      <section class="intro" aria-labelledby="h-title">
+        <h1 class="heading" id="h-title">Route Simulation</h1>
+        <p class="lede">
+          A routing engine built from scratch, running entirely in your browser. Pick two places in Jakarta and
+          compare A*, ALT and Contraction Hierarchies, with traffic that changes through the day.
+        </p>
+      </section>
+    </div>
 
-        <div id="modes">
-          <div class="modes-group">
-            <button data-mode="drive" class="active">🚗 Drive</button>
-            <button data-mode="walk">🚶 Walk</button>
-            <button data-mode="bike">🚲 Bike</button>
-          </div>
-        </div>
-
-        <div class="tb-fields">
-          <span class="dot o"></span>
-          <div class="tb-fields-inputs">
-            <input
-              class="field-input"
-              id="origin"
-              placeholder="Search or click map to set origin"
-              autocomplete="off"
-              spellcheck="false"
-            />
-            <button class="swap-btn" id="swap" title="Swap endpoints">⇅</button>
-            <input
-              class="field-input"
-              id="dest"
-              placeholder="Search or click map for destination"
-              autocomplete="off"
-              spellcheck="false"
-            />
-          </div>
-          <span class="dot d"></span>
-        </div>
-
-        <div class="tb-actions">
-          <div class="settings-wrap">
-            <button id="settings-toggle" class="icon-btn" title="Trip settings">
-              ⚙
-            </button>
-            <div class="settings-panel" id="settings-panel" hidden>
-              <div class="time-row">
-                <div class="time-label">
-                  <span class="ctrl-icon">⏱</span><span>Departure time</span>
-                </div>
-                <span id="hourval">08:00</span>
-              </div>
-              <input
-                type="range"
-                id="hour"
-                min="0"
-                max="23.5"
-                step="0.5"
-                value="8"
-              />
-              <label class="toggle"
-                ><input type="checkbox" id="traffic" checked /> Live traffic
-                (time-of-day)</label
-              >
-              <div class="traffic-legend">
-                <span>low</span>
-                <div class="bar"></div>
-                <span>peak</span>
-              </div>
-              <label class="toggle"
-                ><input type="checkbox" id="showtraffic" checked /> Traffic
-                overlay</label
-              >
-              <label class="toggle"
-                ><input type="checkbox" id="showplaces" checked /> Places</label
-              >
-              <label class="toggle"
-                ><input type="checkbox" id="keepfrontier" /> Keep search dots
-                after animation</label
-              >
-              <div class="time-row" style="margin-top: 10px">
-                <div class="time-label">
-                  <span class="ctrl-icon">▶</span><span>Animation speed</span>
-                </div>
-                <span id="animspeedval">0.5×</span>
-              </div>
-              <input
-                type="range"
-                id="anim-speed"
-                min="1"
-                max="4"
-                step="1"
-                value="1"
-                style="margin-bottom: 0"
-              />
+    <div class="stage">
+      <div id="app">
+        <header id="toolbar">
+          <div id="modes">
+            <div class="modes-group">
+              <button data-mode="drive" class="active">Drive</button>
+              <button data-mode="walk">Walk</button>
+              <button data-mode="bike">Bike</button>
             </div>
           </div>
-          <button id="calc-route" disabled>Calculate Route</button>
-          <button id="clear" class="icon-btn" title="Clear route">✕</button>
-        </div>
-      </header>
 
-      <div id="status-bar">
-        <div id="hint">Loading map…</div>
-        <div id="modenote"></div>
+          <div class="tb-fields">
+            <span class="dot o"></span>
+            <div class="tb-fields-inputs">
+              <input
+                class="field-input"
+                id="origin"
+                placeholder="Search or click map to set origin"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <button class="swap-btn" id="swap" title="Swap endpoints" aria-label="Swap origin and destination">⇅</button>
+              <input
+                class="field-input"
+                id="dest"
+                placeholder="Search or click map for destination"
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </div>
+            <span class="dot d"></span>
+          </div>
+
+          <div class="tb-actions">
+            <div class="settings-wrap">
+              <button id="settings-toggle" class="icon-btn" title="Trip settings" aria-label="Trip settings">⚙</button>
+              <div class="settings-panel" id="settings-panel" hidden>
+                <div class="time-row">
+                  <div class="time-label">
+                    <span class="ctrl-icon">⏱</span><span>Departure time</span>
+                  </div>
+                  <span id="hourval">08:00</span>
+                </div>
+                <input type="range" id="hour" min="0" max="23.5" step="0.5" value="8" />
+                <label class="toggle"><input type="checkbox" id="traffic" checked /> Live traffic (time-of-day)</label>
+                <div class="traffic-legend">
+                  <span>low</span>
+                  <div class="bar"></div>
+                  <span>peak</span>
+                </div>
+                <label class="toggle"><input type="checkbox" id="showtraffic" checked /> Traffic overlay</label>
+                <label class="toggle"><input type="checkbox" id="showplaces" checked /> Places</label>
+                <label class="toggle"><input type="checkbox" id="keepfrontier" /> Keep search dots after animation</label>
+                <div class="time-row" style="margin-top: 10px">
+                  <div class="time-label">
+                    <span class="ctrl-icon">▶</span><span>Animation speed</span>
+                  </div>
+                  <span id="animspeedval">0.5×</span>
+                </div>
+                <input type="range" id="anim-speed" min="1" max="4" step="1" value="1" style="margin-bottom: 0" />
+              </div>
+            </div>
+            <button id="calc-route" disabled>Calculate route</button>
+            <button id="clear" class="icon-btn" title="Clear route" aria-label="Clear route">✕</button>
+          </div>
+        </header>
+
+        <div id="status-bar">
+          <div id="hint">Loading map…</div>
+          <div id="modenote"></div>
+        </div>
+
+        <div id="viewport">
+          <div id="map"></div>
+
+          <aside id="results" class="hidden">
+            <div class="scroll">
+              <div id="routes"></div>
+              <div class="steps-section" id="steps-section" hidden>
+                <button type="button" class="steps-toggle" id="steps-toggle" aria-expanded="false">
+                  <span id="steps-title">Directions</span>
+                  <span class="chevron">▾</span>
+                </button>
+                <div id="steps" class="collapsed"></div>
+              </div>
+            </div>
+            <div class="foot">
+              <div class="anim-row" id="anim-controls" style="display: none">
+                <button id="anim-replay" title="Replay search animation">↻ Replay search animation</button>
+              </div>
+            </div>
+          </aside>
+        </div>
       </div>
-
-      <aside id="results" class="hidden">
-        <div class="scroll">
-          <div id="routes"></div>
-          <div class="steps-section" id="steps-section" hidden>
-            <button
-              type="button"
-              class="steps-toggle"
-              id="steps-toggle"
-              aria-expanded="false"
-            >
-              <span id="steps-title">Directions</span>
-              <span class="chevron">▾</span>
-            </button>
-            <div id="steps" class="collapsed"></div>
-          </div>
-        </div>
-        <div class="foot">
-          <div class="anim-row" id="anim-controls" style="display: none">
-            <button id="anim-replay" title="Replay search animation">
-              ↻ Replay search animation
-            </button>
-          </div>
-        </div>
-      </aside>
     </div>
-    <!-- Fixed-positioned outside #toolbar to escape overflow clipping -->
+
+    <!-- Fixed-positioned outside the card so the dropdowns aren't clipped -->
     <div class="suggestions" id="origin-sugg" hidden></div>
     <div class="suggestions" id="dest-sugg" hidden></div>
+
+    <footer class="site-footer">
+      <a href="https://github.com/brendatamaar/gmaps-simulation">Source</a> ·
+      <a href="https://labs.brendatama.dev/">Labs</a>
+    </footer>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

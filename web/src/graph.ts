@@ -1,3 +1,4 @@
+import { fetchAsset } from './fetch-asset.ts';
 // Loads the binary graph exported by `pnpm export:graph` and exposes the CSR
 // arrays as views over a single ArrayBuffer. Mirrors the layout in
 // src/export-graph.ts exactly.
@@ -24,7 +25,7 @@ const MAGIC = 0x47524150; // "GRAP"
 export async function loadGraph(): Promise<Graph> {
   const [metaRes, binRes, namesRes] = await Promise.all([
     fetch('meta.json'),
-    fetch('graph.bin'),
+    fetchAsset('graph.bin'),
     fetch('names.json'),
   ]);
   if (!metaRes.ok || !binRes.ok || !namesRes.ok) {

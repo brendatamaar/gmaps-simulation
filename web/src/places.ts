@@ -58,7 +58,7 @@ export const KIND_COLOR: Record<PlaceKind, string> = {
 };
 
 export async function loadPlaces(): Promise<Place[]> {
-  const res = await fetch("/places.json");
+  const res = await fetch("places.json");
   if (!res.ok) throw new Error(`places.json: ${res.status}`);
   return res.json() as Promise<Place[]>;
 }

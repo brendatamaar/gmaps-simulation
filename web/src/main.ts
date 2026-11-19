@@ -51,9 +51,27 @@ import {
 import { addPlaceIcons } from "./place-icons.ts";
 import { loadCH, CHRouter, type CHData } from "./ch.ts";
 
-// Light, label-rich CARTO Positron vector basemap: keyless, Google-ish tone.
-const BASEMAP_STYLE =
+// Label-rich CARTO vector basemaps (keyless): Positron for the light theme, Dark Matter for the dark one.
+const BASEMAP_LIGHT =
   "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
+const BASEMAP_DARK =
+  "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+
+// The labs pages share one theme ("data-theme" on <html>, set by the labs header; otherwise the OS).
+const prefersLight = matchMedia("(prefers-color-scheme: light)");
+function isDark(): boolean {
+  const t = document.documentElement.dataset.theme;
+  return (t ?? (prefersLight.matches ? "light" : "dark")) === "dark";
+}
+// Colours for the map layers we draw ourselves, so they read on either basemap.
+function palette(dark: boolean) {
+  return dark
+    ? { label: "#d4d4d4", area: "#a1a1a1", halo: "#131313", casing: "#131313", alt: "#6b7075" }
+    : { label: "#3c4043", area: "#5f6368", halo: "#ffffff", casing: "#ffffff", alt: "#9aa0a6" };
+}
+
+// Side panel width + gap the route must stay clear of (the panel only overlays the map on wide screens).
+const wide = matchMedia("(min-width: 761px)");
 // Raster fallback (different host) used if the vector style above is
 // unreachable — e.g. basemaps.cartocdn.com times out on some networks.
 const BASEMAP_STYLE_FALLBACK = {
@@ -318,7 +336,7 @@ function renderCards() {
     card.className = classes.join(" ");
     card.innerHTML =
       `<div class="eta-row">` +
-      `<span class="eta" style="color:${i === 0 ? "#188038" : "#5f6368"}">${formatEta(r.etaSec)}</span>` +
+      `<span class="eta" style="color:${i === 0 ? "var(--ok)" : "var(--color-quiet)"}">${formatEta(r.etaSec)}</span>` +
       `${i === 0 && routes.length > 1 ? `<span class="badge">Fastest</span>` : ""}` +
       `</div>` +
       `<div class="meta"><b>${(r.distanceM / 1000).toFixed(1)} km</b>` +
@@ -430,10 +448,10 @@ function fitToRoute() {
     ],
     {
       padding: {
-        top: 110 + MARKER_PAD.top,
-        bottom: 60 + MARKER_PAD.bottom,
-        left: 380 + MARKER_PAD.left,
-        right: 60 + MARKER_PAD.right,
+        top: 24 + MARKER_PAD.top,
+        bottom: 24 + MARKER_PAD.bottom,
+        left: (wide.matches ? 372 : 24) + MARKER_PAD.left,
+        right: 24 + MARKER_PAD.right,
       },
       duration: 800,
     },
@@ -1553,13 +1571,13 @@ async function boot() {
   const b = graph.bounds;
   map = new maplibregl.Map({
     container: "map",
-    style: BASEMAP_STYLE,
+    style: isDark() ? BASEMAP_DARK : BASEMAP_LIGHT,
     bounds: [
       [b.minLng, b.minLat],
       [b.maxLng, b.maxLat],
     ],
     fitBoundsOptions: {
-      padding: { top: 110, bottom: 40, left: 40, right: 40 },
+      padding: { top: 24, bottom: 24, left: 24, right: 24 },
     },
     attributionControl: { compact: true },
   });
@@ -1595,6 +1613,7 @@ async function boot() {
   // above — so they must be rebuilt from scratch, not just once at boot).
   function setupMapLayers() {
     const firstSetup = !mapHandlersWired;
+    const pal = palette(usedFallbackStyle ? false : isDark());
 
     // Category badge icons (place-<kind>) must be registered before the symbol
     // layer that references them. Already idempotent (checks map.hasImage).
@@ -1677,7 +1696,7 @@ async function boot() {
         paint: {
           "circle-radius": 7,
           "circle-color": "#673ab7",
-          "circle-stroke-color": "#ffffff",
+          "circle-stroke-color": pal.casing,
           "circle-stroke-width": 2,
         },
       });
@@ -1711,7 +1730,7 @@ async function boot() {
         source: "alts",
         layout: { "line-cap": "round", "line-join": "round" },
         paint: {
-          "line-color": "#9aa0a6",
+          "line-color": pal.alt,
           "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3, 16, 7],
           "line-opacity": 0.85,
         },
@@ -1724,7 +1743,7 @@ async function boot() {
         source: "sel",
         layout: { "line-cap": "round", "line-join": "round" },
         paint: {
-          "line-color": "#ffffff",
+          "line-color": pal.casing,
           "line-width": ["interpolate", ["linear"], ["zoom"], 10, 6, 16, 12],
         },
       });
@@ -1761,7 +1780,7 @@ async function boot() {
         layout: { visibility: "none" },
         paint: {
           "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 4, 16, 7],
-          "circle-color": "#ffffff",
+          "circle-color": pal.casing,
           "circle-stroke-color": ["get", "color"],
           "circle-stroke-width": 3,
         },
@@ -1812,8 +1831,8 @@ async function boot() {
           ],
         },
         paint: {
-          "text-color": "#3c4043",
-          "text-halo-color": "#fff",
+          "text-color": pal.label,
+          "text-halo-color": pal.halo,
           "text-halo-width": 1.4,
         },
       });
@@ -1834,8 +1853,8 @@ async function boot() {
           "text-max-width": 8,
         },
         paint: {
-          "text-color": "#5f6368",
-          "text-halo-color": "#fff",
+          "text-color": pal.area,
+          "text-halo-color": pal.halo,
           "text-halo-width": 1.4,
         },
       });
@@ -1883,6 +1902,21 @@ async function boot() {
   }
 
   map.on("style.load", setupMapLayers);
+
+  // Follow the labs theme toggle: swap the basemap (a full rebuild, so style.load re-adds our layers).
+  let shownDark = isDark();
+  const syncTheme = () => {
+    const d = isDark();
+    if (d === shownDark || usedFallbackStyle) return;
+    shownDark = d;
+    mapReady = false;
+    map.setStyle(d ? BASEMAP_DARK : BASEMAP_LIGHT, { diff: false });
+  };
+  new MutationObserver(syncTheme).observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-theme"],
+  });
+  prefersLight.addEventListener("change", syncTheme);
 
   wireControls();
 }
