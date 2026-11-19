@@ -785,6 +785,24 @@ function setHint(t: string) {
   $("hint").textContent = t;
 }
 
+// Lazily fetch the Contraction Hierarchies graph (~45 MB packed): most visits never turn traffic off.
+let exportedNodes = 0;
+let chRequested = false;
+function ensureCH() {
+  if (chRequested || exportedNodes === 0) return;
+  chRequested = true;
+  loadCH(exportedNodes).then((ch) => {
+    if (!ch) return;
+    chData = ch;
+    chRouter = new CHRouter(ch);
+    console.log(`[boot] CH ready: ${ch.n.toLocaleString()} nodes`);
+    updateModeNote();
+    if (startIdx !== null && endIdx !== null && mode === "drive" && !trafficOn) {
+      recomputeFull();
+    }
+  });
+}
+
 function updateModeNote() {
   let text: string;
   if (mode !== "drive") {
@@ -798,6 +816,7 @@ function updateModeNote() {
     text += altData ? "" : " ALT loading…";
   } else {
     // drive + trafficOff
+    ensureCH();
     if (!chData) {
       text = "CH loading… A* running free-flow in the meantime.";
     } else if (lastCH) {
@@ -1481,7 +1500,11 @@ async function boot() {
   const placesPromise = loadPlaces();
 
   setHint("Loading graph…");
-  graph = await loadGraph();
+  graph = await loadGraph((done, total) =>
+    setHint(
+      `Loading graph… ${(done / 1e6).toFixed(0)} / ${(total / 1e6).toFixed(0)} MB (first visit only, then cached)`,
+    ),
+  );
   // Node count of the as-exported graph — alt.bin/ch.bin are indexed by it
   // (the restriction split below appends nodes, so graph.n moves past it).
   const exportedN = graph.n;
@@ -1514,23 +1537,10 @@ async function boot() {
     if (startIdx !== null && endIdx !== null) recomputeFull();
   });
 
-  // Load CH precomputed graph in the background — once ready, drive+trafficOff
-  // queries switch from A* to CH automatically.
-  loadCH(exportedN).then((ch) => {
-    if (!ch) return;
-    chData = ch;
-    chRouter = new CHRouter(ch);
-    console.log(`[boot] CH ready: ${ch.n.toLocaleString()} nodes`);
-    updateModeNote();
-    if (
-      startIdx !== null &&
-      endIdx !== null &&
-      mode === "drive" &&
-      !trafficOn
-    ) {
-      recomputeFull();
-    }
-  });
+  // The CH graph (the biggest file) is only fetched once drive + traffic off is actually used
+  // (see ensureCH): once ready, those queries switch from A* to CH automatically.
+  exportedNodes = exportedN;
+  updateModeNote();
 
   // Start the Web Worker that computes per-edge cbdFactor and edgeDot.
   // The worker runs in parallel with the rest of init; model updates when it

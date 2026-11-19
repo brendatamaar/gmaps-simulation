@@ -22,10 +22,10 @@ export type Graph = {
 
 const MAGIC = 0x47524150; // "GRAP"
 
-export async function loadGraph(): Promise<Graph> {
+export async function loadGraph(onProgress?: (done: number, total: number) => void): Promise<Graph> {
   const [metaRes, binRes, namesRes] = await Promise.all([
     fetch('meta.json'),
-    fetchAsset('graph.bin'),
+    fetchAsset('graph.bin', onProgress),
     fetch('names.json'),
   ]);
   if (!metaRes.ok || !binRes.ok || !namesRes.ok) {
