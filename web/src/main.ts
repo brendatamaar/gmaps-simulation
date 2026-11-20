@@ -1525,8 +1525,34 @@ function initMobileNote() {
   note.hidden = false;
 }
 
+// Phones: the card is small, so let the map take the whole screen (toolbar stays on top, results become a sheet).
+function initExpand() {
+  const app = $("app");
+  const btn = $("expand");
+  const set = (on: boolean) => {
+    app.classList.toggle("full", on);
+    if (!on) app.classList.remove("fields");
+    document.documentElement.style.overflow = on ? "hidden" : "";
+    btn.textContent = on ? "⤡" : "⤢";
+    btn.setAttribute("aria-pressed", String(on));
+    btn.setAttribute("aria-label", on ? "Exit full screen" : "Expand map to full screen");
+    if (on) window.scrollTo(0, 0);
+    requestAnimationFrame(() => map?.resize());
+  };
+  btn.addEventListener("click", () => set(!app.classList.contains("full")));
+  $("search-toggle").addEventListener("click", () => app.classList.toggle("fields"));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && app.classList.contains("full")) set(false);
+  });
+  // Rotating or resizing past the phone breakpoint leaves full mode.
+  matchMedia("(max-width: 760px)").addEventListener("change", (e) => {
+    if (!e.matches && app.classList.contains("full")) set(false);
+  });
+}
+
 async function boot() {
   initMobileNote();
+  initExpand();
   // Kick off the places fetch immediately so it overlaps with the CPU-heavy
   // graph/restriction/router/model setup below instead of waiting behind it.
   const placesPromise = loadPlaces();
