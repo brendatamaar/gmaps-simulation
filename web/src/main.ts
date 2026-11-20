@@ -131,6 +131,8 @@ let selected = 0;
 let lastTrace: SearchTrace | null = null;
 let lastMeetNode: number | null = null;
 let animFrameId: number | null = null;
+// True while the search/path animation plays; on phones the results sheet waits until it ends.
+let animating = false;
 
 let mode: TravelMode = "drive";
 let hour = 8;
@@ -323,8 +325,15 @@ function renderFields() {
   if (document.activeElement !== d) d.value = dv ?? "";
 }
 
+// Results panel: needs routes; on phones also waits for the animation to finish.
+function syncResults() {
+  const none = routes.length === 0;
+  $("results").classList.toggle("hidden", none || (animating && !wide.matches));
+  $("app").classList.toggle("has-results", !none);
+}
+
 function renderCards() {
-  $("results").classList.toggle("hidden", routes.length === 0);
+  syncResults();
   const host = $("routes");
   host.innerHTML = "";
   routes.forEach((r, i) => {
@@ -399,6 +408,40 @@ const MARKER_PAD = { top: 40, bottom: 15, left: 15, right: 15 };
 // dominant factor in framing, with just enough slack for nearby frontier.
 const FRONTIER_EXPAND_FRAC = 0.4;
 
+// Pixels of the map the floating results sheet covers on phones (its real height once shown, a guess before).
+function sheetPad(): number {
+  if (wide.matches || routes.length === 0) return 0;
+  const app = $("app");
+  if (app.classList.contains("sheet-off")) return 0;
+  const el = $("results");
+  const h = el.classList.contains("hidden") ? 0 : el.offsetHeight;
+  return h || Math.min($("map").clientHeight * 0.4, 240);
+}
+
+function fitPadding(bottomExtra = 0) {
+  return {
+    top: 24 + MARKER_PAD.top,
+    bottom: 24 + MARKER_PAD.bottom + bottomExtra,
+    // phones: the toggle buttons sit on the left edge of the map
+    left: (wide.matches ? 372 : 56) + MARKER_PAD.left,
+    right: 24 + MARKER_PAD.right,
+  };
+}
+
+// Both endpoints chosen, no route yet: frame the pair.
+function fitToPoints() {
+  if (!mapReady || startIdx === null || endIdx === null) return;
+  const a = [graph.lons[startIdx]!, graph.lats[startIdx]!] as [number, number];
+  const b = [graph.lons[endIdx]!, graph.lats[endIdx]!] as [number, number];
+  map.fitBounds(
+    [
+      [Math.min(a[0], b[0]), Math.min(a[1], b[1])],
+      [Math.max(a[0], b[0]), Math.max(a[1], b[1])],
+    ],
+    { padding: fitPadding(), duration: 600, maxZoom: 16 },
+  );
+}
+
 function fitToRoute() {
   if (!mapReady || routes.length === 0) return;
   const r = routes[selected];
@@ -446,15 +489,7 @@ function fitToRoute() {
       [minLon, minLat],
       [maxLon, maxLat],
     ],
-    {
-      padding: {
-        top: 24 + MARKER_PAD.top,
-        bottom: 24 + MARKER_PAD.bottom,
-        left: (wide.matches ? 372 : 24) + MARKER_PAD.left,
-        right: 24 + MARKER_PAD.right,
-      },
-      duration: 800,
-    },
+    { padding: fitPadding(sheetPad()), duration: 800 },
   );
 }
 
@@ -502,6 +537,7 @@ function updateAnimControls() {
 }
 
 function stopAnimation() {
+  animating = false;
   if (animFrameId !== null) {
     cancelAnimationFrame(animFrameId);
     animFrameId = null;
@@ -731,6 +767,8 @@ function playRouteAnimation() {
   }
   setData("alts", { type: "FeatureCollection", features: [] });
   setData("sel", { type: "FeatureCollection", features: [] });
+  animating = true;
+  syncResults();
   fitToRoute();
 
   const speed = getAnimSpeedMultiplier();
@@ -761,6 +799,10 @@ function playRouteAnimation() {
     animatePathDraw(pathMs, () => {
       if (mapReady) map.setLayoutProperty("meet-point", "visibility", "none");
       renderRoutesOnMap();
+      // Phones: now bring up the sheet and re-frame the route above it.
+      animating = false;
+      syncResults();
+      if (!wide.matches) fitToRoute();
     });
   });
 }
@@ -1090,6 +1132,7 @@ function setEndpoint(idx: number, label: string | null = null) {
     setHint("Ready — click 'Calculate Route' to find routes.");
     updateCalcButton();
     renderAll();
+    fitToPoints();
   }
 }
 
@@ -1112,6 +1155,7 @@ function setEndpointDirect(
     setHint("Ready — click 'Calculate Route' to find routes.");
     updateCalcButton();
     renderAll();
+    fitToPoints();
   } else {
     setHint(
       startIdx === null
@@ -1531,16 +1575,31 @@ function initExpand() {
   const btn = $("expand");
   const set = (on: boolean) => {
     app.classList.toggle("full", on);
-    if (!on) app.classList.remove("fields");
+    // Lock page scroll while full so swiping the sheet or map never moves the page behind it.
     document.documentElement.style.overflow = on ? "hidden" : "";
+    document.body.style.overflow = on ? "hidden" : "";
     btn.textContent = on ? "⤡" : "⤢";
     btn.setAttribute("aria-pressed", String(on));
     btn.setAttribute("aria-label", on ? "Exit full screen" : "Expand map to full screen");
     if (on) window.scrollTo(0, 0);
-    requestAnimationFrame(() => map?.resize());
   };
   btn.addEventListener("click", () => set(!app.classList.contains("full")));
-  $("search-toggle").addEventListener("click", () => app.classList.toggle("fields"));
+
+  // Top panel (toolbar + status) and bottom sheet (results) can each be hidden to see more map.
+  const wire = (id: string, cls: string, label: string) => {
+    const b = $(id);
+    b.addEventListener("click", () => {
+      const off = app.classList.toggle(cls);
+      b.setAttribute("aria-pressed", String(off));
+      b.setAttribute("aria-label", `${off ? "Show" : "Hide"} ${label}`);
+      if (cls === "sheet-off" && !off) syncResults();
+    });
+  };
+  wire("top-toggle", "top-off", "search panel");
+  wire("sheet-toggle", "sheet-off", "route details");
+
+  // The map's box changes whenever a panel hides or the card goes full screen.
+  new ResizeObserver(() => map?.resize()).observe($("map"));
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && app.classList.contains("full")) set(false);
   });

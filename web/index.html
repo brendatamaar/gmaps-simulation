@@ -629,7 +629,7 @@
       /* ── Narrow screens: toolbar wraps, fields stack, results move under the map ── */
       @media (max-width: 760px) {
         #app {
-          height: min(90dvh, 880px);
+          height: max(640px, 94dvh);
         }
         #toolbar {
           position: relative;
@@ -678,31 +678,27 @@
           grid-area: 1 / 2 / 3 / 3;
           align-self: center;
         }
-        #viewport {
-          display: flex;
-          flex-direction: column;
-        }
-        #map {
-          position: relative;
-          flex: 1 1 0;
-          min-height: 200px;
-        }
+        /* The map always fills the card; results float over it as a bottom sheet */
         #results {
-          position: relative;
           top: auto;
-          left: auto;
-          flex: none;
+          left: 0;
+          right: 0;
+          bottom: 0;
           width: auto;
-          max-height: 46%;
+          max-height: 42%;
           border-width: 1px 0 0;
-          border-radius: 0;
-          box-shadow: none;
+          border-radius: 14px 14px 0 0;
+          box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.25);
+          padding-bottom: env(safe-area-inset-bottom);
+          touch-action: pan-y;
+          overscroll-behavior: contain;
+        }
+        #results .scroll {
+          overscroll-behavior: contain;
+          -webkit-overflow-scrolling: touch;
         }
 
-        /* Expand: the card fills the screen, the map takes everything, results float over it as a sheet */
-        #viewport #expand {
-          display: grid;
-        }
+        /* Full screen: the card covers the viewport */
         #app.full {
           position: fixed;
           inset: 0;
@@ -711,42 +707,34 @@
           max-width: none;
           border-radius: 0;
           border: 0;
+          overscroll-behavior: none;
         }
-        #app.full #status-bar,
-        #app.full .tb-fields {
+
+        /* the algorithm note is long; the hint line is enough on a phone */
+        #modenote {
           display: none;
         }
-        #app.full.fields .tb-fields {
-          display: flex;
+
+        /* Panels can be hidden to see more map */
+        #app.top-off #toolbar,
+        #app.top-off #status-bar,
+        #app.sheet-off #results {
+          display: none;
         }
-        #app.full #map {
-          position: absolute;
-          inset: 0;
-          min-height: 0;
+        #viewport .map-btn {
+          display: grid;
         }
-        #app.full #results {
-          position: absolute;
-          left: 0;
-          right: 0;
-          bottom: 0;
-          top: auto;
-          max-height: 42%;
-          border-width: 1px 0 0;
-          border-radius: 14px 14px 0 0;
-          box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.25);
-          padding-bottom: env(safe-area-inset-bottom);
+        #viewport #sheet-toggle {
+          display: none;
         }
-        #app.full #calc-route {
-          order: 3;
-          flex: 1 1 0;
+        #app.has-results #viewport #sheet-toggle {
+          display: grid;
         }
       }
 
-      #expand,
-      #search-toggle {
+      .map-btn {
         display: none;
         position: absolute;
-        top: 10px;
         left: 10px;
         z-index: 5;
         width: 40px;
@@ -760,16 +748,19 @@
         cursor: pointer;
         box-shadow: 0 1px 6px rgba(0, 0, 0, 0.25);
       }
-      #search-toggle {
+      #expand {
+        top: 10px;
+      }
+      #top-toggle {
         top: 58px;
       }
-      @media (max-width: 760px) {
-        #viewport #search-toggle {
-          display: none;
-        }
-        #app.full #viewport #search-toggle {
-          display: grid;
-        }
+      #sheet-toggle {
+        top: 106px;
+      }
+      #app.top-off #top-toggle,
+      #app.sheet-off #sheet-toggle {
+        background: var(--color-raised);
+        opacity: 0.85;
       }
 
       /* ── Touch screens: finger-sized targets, 16px inputs (iOS zooms the page on smaller ones) ── */
@@ -969,8 +960,9 @@
 
         <div id="viewport">
           <div id="map"></div>
-          <button type="button" id="expand" aria-label="Expand map to full screen" aria-pressed="false">⤢</button>
-          <button type="button" id="search-toggle" aria-label="Show or hide origin and destination fields">⌕</button>
+          <button type="button" class="map-btn" id="expand" aria-label="Expand map to full screen" aria-pressed="false">⤢</button>
+          <button type="button" class="map-btn" id="top-toggle" aria-label="Hide search panel" aria-pressed="false">⇧</button>
+          <button type="button" class="map-btn" id="sheet-toggle" aria-label="Hide route details" aria-pressed="false">⇩</button>
 
           <aside id="results" class="hidden">
             <div class="scroll">
